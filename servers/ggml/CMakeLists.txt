@@ -149,7 +149,7 @@ target_link_libraries(zonos3-cli PRIVATE zonos3 zonos3-audio)
 target_include_directories(zonos3-cli PRIVATE vendor)
 
 add_executable(zac-cli src/zac-cli.cpp)
-target_link_libraries(zac-cli PRIVATE zonos3-audio)
+target_link_libraries(zac-cli PRIVATE zonos3 zonos3-audio)
 add_executable(zac-encoder-cli src/zac-encoder-cli.cpp)
 target_link_libraries(zac-encoder-cli PRIVATE zonos3-audio)
 add_executable(ssl-encoder-cli src/ssl-encoder-cli.cpp)
