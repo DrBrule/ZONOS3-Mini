@@ -110,10 +110,10 @@ static void zac_lane_loop(ServerState & s, ZacLane & lane) {
             lane.q.pop_front();
         }
         ReqJob & job = *t.job;
-        bool failed;
-        { std::lock_guard<std::mutex> lk(job.m); failed = job.failed; }
+        bool failed, dropped;
+        { std::lock_guard<std::mutex> lk(job.m); failed = job.failed; dropped = job.client_dropped; }
         bool ok = !t.fail;
-        if (!t.drop && !t.fail && !failed) {
+        if (!t.drop && !t.fail && !failed && !dropped) {
             std::vector<float> pcm;
             if (t.kind == ZacTask::WINDOW) {
                 ok = zac_stream_decode(lane.zac, job.dst, t.codes.data(), t.H, t.f_hi, pcm);
@@ -390,6 +390,14 @@ static void worker_loop(ServerState & s) {
             std::shared_ptr<ReqJob> job;
             { std::lock_guard<std::mutex> lk(s.sched_mtx); if (!s.incoming.empty()) job = s.incoming.front(); }
             if (!job) break;
+            // A disconnected queued request has no execution state to drain.
+            bool dropped_before_admission;
+            { std::lock_guard<std::mutex> lk(job->m); dropped_before_admission = job->client_dropped; }
+            if (dropped_before_admission) {
+                { std::lock_guard<std::mutex> lk(s.sched_mtx); s.incoming.pop_front(); }
+                job_finish(*job, /*failed=*/false);
+                continue;
+            }
             // A CFG job (speaker / controls) needs two slots (conditional + twin); the FIFO head waits for them.
             const bool cfg = job->gr.cfg_scale != 1.0f;
             int primary = -1, twin = -1;
