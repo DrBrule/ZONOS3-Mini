@@ -64,7 +64,7 @@ void usage(const char * a0) {
             "  --port P            port (default 1919; 0 picks a free ephemeral port)\n"
             "  --gpu | --cpu       backend (default: gpu on Apple Silicon, cpu elsewhere)\n"
             "  --zac-cpu           run the ZAC decoders on CPU even with --gpu (isolates the backbone graph)\n"
-            "  --zac-gpu           run the ZAC decoders on the --gpu backend (default)\n"
+            "  --zac-gpu           run the ZAC decoders on GPU independently of --cpu\n"
             "  --max N             max frames per request (default %d, ~%ds; shrunk to the slot rows a prompt leaves)\n"
             "  --batch N           continuous-batching width / concurrent syntheses (default 8). A decode-graph\n"
             "                      ladder runs the narrowest width covering the active slots; cache/state memory\n"
@@ -129,6 +129,7 @@ int server_run(int argc, char ** argv, zonos3_server_ctl * ctl) {
     std::vector<std::string> zac_paths; // --zac, the default first
     int port = 1919;
     bool zac_cpu = false;
+    bool zac_gpu = false;
     auto value = [&](int & i) -> const char * { return i + 1 < argc ? argv[++i] : nullptr; };
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -154,8 +155,8 @@ int server_run(int argc, char ** argv, zonos3_server_ctl * ctl) {
         else if (a == "--port" && has_value) port = atoi(value(i));
         else if (a == "--gpu") s.use_gpu = true;
         else if (a == "--cpu") s.use_gpu = false;
-        else if (a == "--zac-cpu") zac_cpu = true;
-        else if (a == "--zac-gpu") zac_cpu = false;
+        else if (a == "--zac-cpu") { zac_cpu = true; zac_gpu = false; }
+        else if (a == "--zac-gpu") { zac_cpu = false; zac_gpu = true; }
         else if (a == "--max" && has_value) s.max_frames = atoi(value(i));
         else if (a == "--batch" && has_value) s.batch_slots = std::max(1, atoi(value(i)));
         else if (a == "--zac-threads" && has_value) s.zac_threads = std::max(1, atoi(value(i)));
@@ -357,7 +358,7 @@ int server_run(int argc, char ** argv, zonos3_server_ctl * ctl) {
     // Decoders (load_decoder): each with its own decode pool of --zac-threads lanes.
     for (const std::string & zac_path : zac_paths) {
         std::string err;
-        if (!load_decoder(s, zac_path, s.use_gpu && !zac_cpu, err)) {
+        if (!load_decoder(s, zac_path, (s.use_gpu || zac_gpu) && !zac_cpu, err)) {
             fprintf(stderr, "%s\n", err.c_str());
             if (!mp_file_exists(zac_path)) mp_print_missing_hint(MP_DEFAULT_ZAC, zac_path);
             return 1;
