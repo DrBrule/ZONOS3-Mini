@@ -5,6 +5,7 @@
 //   zac-cli <zac.gguf> <codes.npy> <out.wav> [--eos N] [--skip-frames N] [--headroom-db X] [--gpu|--cpu]
 //   zac-cli --seam <zac.gguf> <codes.npy> [--block N] [--gpu|--cpu]
 #include "zac.h"
+#include "zonos3-generation.h"
 #include "npy.h"
 #include "wav.h"
 
@@ -179,7 +180,10 @@ int main(int argc, char ** argv) {
     for (float & v : audio) v *= gain;
     fprintf(stderr, "zac-cli: dropped %zu prefill samples, gain %.4f\n", drop, gain);
     const std::string out(out_path);
-    bool ok = out.size() >= 4 && out.compare(out.size() - 4, 4, ".npy") == 0
+    const bool want_npy = out.size() >= 4 && out.compare(out.size() - 4, 4, ".npy") == 0;
+    // NPY preserves the gain-scaled decoder tensor; only served WAV is limited.
+    if (!want_npy) zonos3_soft_limit(audio.data(), audio.size());
+    bool ok = want_npy
                   ? npy::save_f32(out_path, audio.data(), {(int64_t) audio.size()})
                   : wav_pcm16_write(out_path, audio, m.sample_rate);
     zac_free(m);

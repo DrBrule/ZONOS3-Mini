@@ -1,5 +1,6 @@
 // zonos3-cli — GDN FullAttnRes raw-reference synthesis and numerical validation.
 #include "zonos3.h"
+#include "zonos3-generation.h"
 #include "zonos3-sampler.h"
 #include "zonos3-steer.h"
 #include "zonos3-accent.h"
@@ -133,6 +134,7 @@ static bool emit_output(const std::string & out, const zonos3_model & model, con
             audio.erase(audio.begin(), audio.begin() + drop);
             const float gain = zac_output_gain(dm, headroom_db);
             for (float & v : audio) v *= gain;
+            zonos3_soft_limit(audio.data(), audio.size());
         }
         const bool written = decoded && wav_pcm16_write(wav.c_str(), audio, dm.sample_rate);
         zac_free(dm);
