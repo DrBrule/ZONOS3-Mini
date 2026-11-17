@@ -81,8 +81,15 @@ int zonos3_sampler::sample(const float * in, int cb) {
 
     keep.assign(idx.size(), 1);
     if (sp.top_p > 0.0f && sp.top_p < 1.0f) {
-        double before = 0;
-        for (int r : ord) { if (before > sp.top_p) keep[r] = 0; before += p[r]; }
+        // The original CPU cumsum accumulates in double, stores each prefix
+        // as float, then subtracts that column in float before comparing p.
+        double cumulative = 0;
+        for (int r : ord) {
+            cumulative += p[r];
+            const float rounded_prefix = static_cast<float>(cumulative);
+            const float preceding_mass = rounded_prefix - p[r];
+            if (preceding_mass > sp.top_p) keep[r] = 0;
+        }
     }
     if (sp.min_p > 0.0f) {
         const float thr = sp.min_p * p[ord[0]];
