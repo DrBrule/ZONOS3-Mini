@@ -22,10 +22,13 @@ export const spec = computed<ControlsSpec>(() => backend.value!.spec);
 
 /** The checkpoint's phoneme tokens (pronunciation input), or null. */
 export const pronTokens = computed(() => backend.value?.pron.phoneme_tokens ?? null);
+/** The checkpoint's pause tokens (`<0.5>` marks), or null. */
+export const pauseTokens = computed(() => backend.value?.pauseTokens ?? null);
 
 /** Backend and project inputs of every generate request (`buildRequest`). */
 export const requestContext = computed<RequestContext>(() => ({
   phonemeTokens: pronTokens.value,
+  pauseTokens: pauseTokens.value,
   decoder: requestDecoder(backend.value?.decoders ?? [], projectSettings.value.decoder),
   laci: projectSettings.value.laci,
   laciLanguages: backend.value?.laciLanguages ?? [],

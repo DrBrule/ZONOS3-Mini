@@ -5,7 +5,7 @@ import type { AccentSpec, ControlSpec } from '../api';
 import { decoderName } from '../lib/decoders';
 import { LACI_LABEL, LACI_MODES } from '../lib/laci';
 import { langLabel } from '../lib/languages';
-import { parsePron } from '../lib/pron';
+import { NO_MARKS, parseMarks } from '../lib/pron';
 import { DEFAULT_GAP, GAP_RANGE } from '../state/lines';
 import { NO_STEERING, type ScriptEnv } from './script';
 import { DIRECTIVES, NAME_FORBIDDEN, NUMBER, parseScript, pieceAt, speakerNames, VOICE_NAME_MAX, type ItemList } from './syntax';
@@ -46,25 +46,31 @@ export interface Token {
 
 /** An item and the names typed text matches it by. */
 type Named = [CompletionItem, readonly string[]];
-/** Where an item list sits: on a @voice, over a whole line (or @baseline), over words. */
-type Context = 'voice' | 'line' | 'span';
+/** Where an item list sits: on a @voice, before a line's colon, @baseline, over words. */
+type Context = 'voice' | 'line' | 'baseline' | 'span';
 
 const num = (n: number) => String(n).replace('-', '−');
 
 const DIRECTIVE_DETAIL: Record<string, string> = {
-  language: 'language of every line · default: Language above',
-  mode: 'embedding | reference for library voices',
-  seed: 'one seed for every line · default: Advanced → Seed',
-  laci: 'off | stream | whole · default: Advanced → LACI',
-  decoder: 'an audio decoder of this server',
-  gap: `silence between lines, ${GAP_RANGE[0]}–${GAP_RANGE[1]} s`,
-  baseline: 'delivery for every line',
+  language: 'language from this line on · default: Language above',
+  mode: 'embedding | reference for library voices (whole script, once)',
+  seed: 'seed from this line on · default: Advanced → Seed',
+  laci: 'off | stream | whole from this line on · default: Advanced → LACI',
+  decoder: 'an audio decoder of this server, from this line on',
+  gap: `silence before each line from this line on, ${GAP_RANGE[0]}–${GAP_RANGE[1]} s`,
+  baseline: 'delivery for every line from this line on',
+  start: 'on | off: speech from the first frame, from this line on',
   voice: 'a designed voice: @voice Name = library voice {…}',
 };
 
 const MODES: Named[] = [
   [{ label: 'embedding', insert: 'embedding', detail: 'the voice embedding: every control applies', kind: 'value' }, ['embedding']],
   [{ label: 'reference', insert: 'reference', detail: 'the recording: only delivery and mood apply', kind: 'value' }, ['reference']],
+];
+
+const STARTS: Named[] = [
+  [{ label: 'on', insert: 'on', detail: 'speech from the first frame', kind: 'value' }, ['on']],
+  [{ label: 'off', insert: 'off', detail: 'the usual silence first', kind: 'value' }, ['off']],
 ];
 
 /**
@@ -86,7 +92,7 @@ function controlItems(env: AssistEnv, ctx: Context): Named[] {
   if (!env.steering) return [];
   const { ui } = env.spec;
   return ui.controls
-    .filter((c) => (ctx === 'voice' ? !c.span_only : ctx === 'line' ? c.spannable && !c.span_only : c.spannable))
+    .filter((c) => (ctx === 'voice' ? !c.span_only : ctx === 'span' ? c.spannable : c.spannable && !c.span_only))
     .map((c): Named => {
       const info = [c.poles && `${c.poles[0]} ↔ ${c.poles[1]}`, `safe ${num(c.safe[0])}…${num(c.safe[1])}`, c.span_only && 'words only', c.effect];
       const item: CompletionItem = {
@@ -139,7 +145,10 @@ export function completeAt(text: string, caret: number, env: AssistEnv): Complet
           ['mode', 'embedding | reference', true],
         ];
         for (const [kw, detail, offered] of keywords) if (offered) items.push([{ label: kw, insert: `${kw} `, detail, kind: 'keyword' }, [kw]]);
-      } else if (!steering) return hint(NO_STEERING);
+      } else if (ctx === 'line' && env.caps.start_token) {
+        items.push([{ label: 'start', insert: 'start', detail: 'speech from the first frame', kind: 'keyword' }, ['start']]);
+      }
+      if (!steering && !items.length) return hint(NO_STEERING);
       return done(w0?.from ?? caret, wordEnd(/^[^\s,{}]*/), rank(items, w0?.text ?? ''));
     }
     const head = w0.text.toLowerCase();
@@ -192,8 +201,8 @@ export function completeAt(text: string, caret: number, env: AssistEnv): Complet
   if (l.kind === 'blank') return voiceNames(caret);
   if (l.kind === 'directive') {
     if (l.at.from < caret && caret <= l.at.to) {
-      const offered: Record<string, boolean> = { laci: env.caps.laci_languages.length > 0, decoder: served.length > 0, baseline: steering };
-      const items = DIRECTIVES.filter((d) => offered[d] !== false && (d === 'voice' || !lines.some((o) => o !== l && o.kind === 'directive' && o.name === d))).map(
+      const offered: Record<string, boolean> = { laci: env.caps.laci_languages.length > 0, decoder: served.length > 0, baseline: steering, start: env.caps.start_token != null };
+      const items = DIRECTIVES.filter((d) => offered[d] !== false && (d !== 'mode' || !lines.some((o) => o !== l && o.kind === 'directive' && o.name === d))).map(
         (d): Named => [{ label: `@${d}`, insert: `@${d} `, detail: DIRECTIVE_DETAIL[d], kind: 'directive' }, [d]],
       );
       return done(l.at.from, l.at.to, rank(items, text.slice(l.at.from + 1, caret), true));
@@ -206,6 +215,9 @@ export function completeAt(text: string, caret: number, env: AssistEnv): Complet
         return done(l.arg.from, to, rank(env.languages.map((code): Named => [{ label: code, insert: code, detail: langLabel(code), kind: 'value' }, [code, langLabel(code)]]), q));
       case 'mode':
         return done(l.arg.from, to, rank(MODES, q));
+      case 'start':
+        if (!env.caps.start_token) return hint('This server has no start token.');
+        return done(l.arg.from, to, rank(STARTS, q));
       case 'laci':
         if (!env.caps.laci_languages.length) return hint('This server has no LACI alignment heads.');
         return done(l.arg.from, to, rank(LACI_MODES.map((m): Named => [{ label: m, insert: m, detail: LACI_LABEL[m], kind: 'value' }, [m, LACI_LABEL[m]]]), q));
@@ -224,7 +236,7 @@ export function completeAt(text: string, caret: number, env: AssistEnv): Complet
         return hint(`seconds from ${GAP_RANGE[0]} to ${GAP_RANGE[1]} (default ${DEFAULT_GAP})`);
       case 'baseline': {
         const list = listAt(l.items);
-        return list && itemList(list, 'line');
+        return list && itemList(list, 'baseline');
       }
       case 'voice': {
         const v = l.voice!;
@@ -287,7 +299,9 @@ export function highlight(text: string, env: AssistEnv): Token[] {
         items(sp.items);
       }
       const at = l.text.from;
-      if (env.caps.phoneme_tokens) for (const g of parsePron(l.text.text, null).groups) put(at + g.start, at + g.end, 'pron');
+      const marks = parseMarks(l.text.text, NO_MARKS);
+      if (env.caps.phoneme_tokens) for (const g of marks.groups) put(at + g.start, at + g.end, 'pron');
+      if (env.caps.pause_tokens) for (const p of marks.pauses) put(at + p.start, at + p.end, 'pron');
     }
   }
   out.sort((a, b) => a.from - b.from);

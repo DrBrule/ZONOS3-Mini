@@ -23,6 +23,7 @@ import * as fixturePron from './fixtures/phonemize';
 import * as fixtureProjects from './fixtures/projects';
 import fixturePhonemes from './fixtures/phonemes.json';
 import { unknownDecoder } from './lib/decoders';
+import type { PauseTokens } from './lib/pron';
 import { ApiError, bodyOf, createHttp, errorOf, MissingMedia, newSessionId, readError, readFloat32Stream, RevisionConflict } from './lib/http';
 import { wavBytes } from './lib/wav';
 import { encodeNpy, bufferToDataUrl, blobToDataUrl, slug } from './lib/files';
@@ -155,6 +156,8 @@ export interface Backend {
   laciLanguages: string[];
   /** The checkpoint has a start token (/v2/capabilities.start_token). */
   startToken: boolean;
+  /** The checkpoint's pause tokens (/v2/capabilities.pause_tokens), or null. */
+  pauseTokens: PauseTokens | null;
 }
 
 type Capabilities = Schemas['Capabilities'];
@@ -328,6 +331,7 @@ export async function connect(opts: ConnectOptions = {}): Promise<Backend> {
       decoders: kind === 'offline' ? FIXTURE_DECODERS : (caps?.decoders ?? []),
       laciLanguages: caps?.laci_languages ?? [],
       startToken: caps?.start_token != null,
+      pauseTokens: caps?.pause_tokens ?? null,
     });
   };
   if (forced === 'offline') return make('offline', fixture);

@@ -13,17 +13,19 @@ const env: AssistEnv = {
   spec,
   steering: true,
   speakers: [speaker('ann', 'Ann en British F 1'), speaker('lie', 'Liesel de F 1')],
-  caps: { decoders: FIXTURE_DECODERS, laci_languages: ['en_us'], phoneme_tokens: null, start_token: null },
+  caps: { decoders: FIXTURE_DECODERS, laci_languages: ['en_us'], phoneme_tokens: null, start_token: null, pause_tokens: null },
   languages: ['en_us', 'en_gb', 'de'],
 };
 const complete = (text: string, over: Partial<AssistEnv> = {}) => completeAt(text, text.length, { ...env, ...over });
 const labels = (text: string, over: Partial<AssistEnv> = {}) => complete(text, over)?.items.map((i) => i.label);
 
 describe('lite script completion', () => {
-  it('offers directives not set yet, and their values', () => {
+  it('offers directives (@mode only once), and their values', () => {
     expect(complete('@la')).toMatchObject({ from: 0, to: 3 });
     expect(labels('@la')).toEqual(['@language', '@laci']);
-    expect(complete('@seed 1\n@se')).toBeNull();
+    expect(labels('@seed 1\n@se')).toEqual(['@seed']);
+    expect(complete('@mode embedding\n@mo')).toBeNull();
+    expect(labels('@start ', { caps: { ...env.caps, start_token: { marker: '\ue002' } } })).toEqual(['on', 'off']);
     expect(complete('# @la')).toBeNull();
     expect(labels('@language ger')).toEqual(['de']);
     expect(complete('@language de')).toBeNull();

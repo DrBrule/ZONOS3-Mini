@@ -4,8 +4,8 @@ import type { GenerateRequest, Rendered } from '../api';
 import { sequence } from '../audio/mix';
 import { errorText, isAbort, render } from '../audio/render';
 import { uid } from '../lib/math';
-import { backend, notify, projectSettings, pronTokens, requestContext, spec } from './app';
-import { pronProblem } from '../lib/pron';
+import { backend, notify, pauseTokens, projectSettings, pronTokens, requestContext, spec } from './app';
+import { textProblem } from '../lib/pron';
 import { design, type Design } from './design';
 import { durationFactor, toDoses, type Values } from './engine';
 import { History } from './history';
@@ -298,7 +298,7 @@ export function cancelLine(lineId: string) {
 export async function renderLine(lineId: string, signal?: AbortSignal): Promise<boolean> {
   const line = script.value.lines.find((l) => l.id === lineId);
   if (!line || !line.text.trim()) return false;
-  const problem = pronProblem(line.text, pronTokens.value);
+  const problem = textProblem(line.text, { phonemes: pronTokens.value, pauses: pauseTokens.value });
   if (problem) {
     lineError.value = { ...lineError.value, [lineId]: problem };
     return false;

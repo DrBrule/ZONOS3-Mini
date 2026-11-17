@@ -15,7 +15,7 @@ import { bytesToBase64, base64ToBytes } from '../lib/files';
 import { parseWav, wavBytes } from '../lib/wav';
 import { levelMeter } from '../lib/level';
 import { clamp, uid } from '../lib/math';
-import { parsePron, pronProblem, spokenText, toSent } from '../lib/pron';
+import { parsePron, spokenText, textProblem, toSent } from '../lib/pron';
 import { EDIT_LANGUAGES, langLabel } from '../lib/languages';
 import { act, backend, notify, projectSettings, pronTokens, requestContext, spec } from './app';
 import { controlDose, type Values } from './engine';
@@ -190,8 +190,10 @@ export const pronEdit = computed(() => canEdit.value && !!pronTokens.value);
 /** The current version has no transcript yet (no speech recognition): the user types what it says, then aligns. */
 export const needsTranscript = computed(() => !!version.value && !version.value.transcript);
 
-/** What the server would refuse in the target's pronunciation groups (never for the transcript being fixed). */
-export const pronError = computed(() => (pronEdit.value && !fixMode.value ? pronProblem(text.value, pronTokens.value) : null));
+/** What the server would refuse in the target's pronunciation groups and pause marks (never for the transcript being fixed). */
+export const pronError = computed(() =>
+  canEdit.value && !fixMode.value ? textProblem(text.value, { phonemes: pronEdit.value ? pronTokens.value : null, pauses: null }, 'edit') : null,
+);
 
 export const regionError = computed(() => {
   const n = regions.value.length;
@@ -676,7 +678,7 @@ function onFrame(t: number, inward: 1 | -1): number {
 
 /** `target` may write pronunciation groups (sent as U+E000 IPA U+E001); `original` is plain: it describes the audio. */
 export function requestFor(v: Version, target: string, list: { start: number; end: number; values: Values }[], audio = v.b64, original = v.transcript, words?: Word[]): EditRequest {
-  if (pronEdit.value) target = toSent(target, pronTokens.value).text;
+  if (pronEdit.value) target = toSent(target, { phonemes: pronTokens.value, pauses: null }).text;
   const req: EditRequest = {
     audio_base64: audio,
     original_text: original,

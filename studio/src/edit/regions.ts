@@ -5,7 +5,7 @@
  * SequenceMatcher (no junk) so repeated-token cases match the server.
  *
  * Pronunciation groups (phoneme-token checkpoints) are one target word each: the token `U+E000 IPA U+E001`, which
- * never equals a spelled word. Target text in the editor writes them "(X-SAMPA)" (`groups` arguments); the sent
+ * never equals a spelled word. Target text in the editor writes them "[[X-SAMPA]]" (`groups` arguments); the sent
  * form (`\ue000…\ue001`) is always one token.
  */
 
@@ -136,7 +136,7 @@ function chunks(text: string, groups: boolean): Chunk[] {
   return out;
 }
 
-/** Edit tokens; with `groups`, each "(X-SAMPA)" group is one token (sent-form groups always are). */
+/** Edit tokens; with `groups`, each "[[X-SAMPA]]" group is one token (sent-form groups always are). */
 export function normalizeTokens(text: string, groups = false): string[] {
   return chunks(text, groups).flatMap((c) => c.tokens);
 }
@@ -331,7 +331,7 @@ export function summarizeChanges(changes: Change[], words: Word[], targetText: s
     const before = joinDistinct(tokenWord.slice(c.i1, c.i2), (wi) => wi, (wi) => words[wi].word);
     // A pronunciation group reads as its IPA: "Siobhan → /ʃəvɔːn/".
     const word = (o: [number, number]) => targetText.slice(o[0], o[1]);
-    const after = joinDistinct(owners.slice(c.j1, c.j2), (o) => o[0], groups ? (o) => word(o).replace(/\(([^()]*)\)/g, (_, b: string) => `/${xsampaToIpa(b)}/`) : word);
+    const after = joinDistinct(owners.slice(c.j1, c.j2), (o) => o[0], groups ? (o) => word(o).replace(/\[\[([^\[\]]*)\]\]/g, (_, b: string) => `/${xsampaToIpa(b)}/`) : word);
     if (c.i1 !== c.i2 && c.j1 !== c.j2) parts.push(`${before} → ${after}`);
     else if (c.j1 !== c.j2) parts.push(`+ ${after}`);
     else if (c.i1 !== c.i2) parts.push(`− ${before}`);

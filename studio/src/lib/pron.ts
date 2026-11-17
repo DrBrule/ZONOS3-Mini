@@ -1,5 +1,5 @@
 /**
- * Pronunciation input: X-SAMPA in parentheses, "I met (S@vQn)". Ported from the phoneme branch's tts_ui.html
+ * Pronunciation input: X-SAMPA in double square brackets, "I met [[S@vQn]]". Ported from the phoneme branch's tts_ui.html
  * (same table and rules: "_" ties two symbols, symbols without an X-SAMPA spelling are typed as-is, stress /
  * syllable dots / linking / spaces are dropped as in training). Phoneme-token checkpoints read each group as
  * U+E000 IPA U+E001; every offset the studio sends refers to that SENT text.
@@ -92,10 +92,10 @@ export interface PronTokens {
 }
 
 export interface Group {
-  /** Display offsets of the whole "(…)" group. */
+  /** Display offsets of the whole "[[…]]" group. */
   start: number;
   end: number;
-  /** The X-SAMPA between the parentheses. */
+  /** The X-SAMPA between the brackets. */
   body: string;
   ipa: string;
   /** IPA characters without a token on this checkpoint. */
@@ -110,51 +110,116 @@ export interface PronIssue {
 
 export interface Parsed {
   groups: Group[];
-  /** Unclosed "(", stray ")", nested "(", empty groups, symbols without a token. */
+  /** Unclosed "[[", stray "]]", nested "[[", empty groups, symbols without a token. */
   issues: PronIssue[];
 }
 
-/** The well-formed "(…)" groups of `text`; a "(" without its ")" (or with another "(" first) is flagged. */
+/** The well-formed "[[…]]" groups of `text`; a "[[" without its "]]" (or with another "[[" first) is flagged. */
 export function parsePron(text: string, tokens: PronTokens | null): Parsed {
   const known = tokens ? new Set(tokens.symbols) : null;
   const groups: Group[] = [];
   const issues: PronIssue[] = [];
+  const opens = (at: number) => text.startsWith('[[', at) && text[at + 2] !== '[';
   let i = 0;
   while (i < text.length) {
-    const ch = text[i];
-    if (ch === ')') {
-      issues.push({ at: i, text: `“)” at ${i + 1} closes no group` });
+    if (text.startsWith(']]', i)) {
+      issues.push({ at: i, text: `“]]” at ${i + 1} closes no group` });
+      i += 2;
+      continue;
+    }
+    if (!opens(i)) {
       i++;
       continue;
     }
-    if (ch !== '(') {
-      i++;
+    const close = text.indexOf(']]', i + 2);
+    let nested = -1;
+    for (let j = i + 2; j < (close < 0 ? text.length : close); j++) {
+      if (opens(j)) {
+        nested = j;
+        break;
+      }
+    }
+    if (close < 0 || nested >= 0) {
+      issues.push({ at: i, text: `“[[” at ${i + 1} is never closed` });
+      i += 2;
       continue;
     }
-    const close = text.indexOf(')', i + 1);
-    const nested = text.indexOf('(', i + 1);
-    if (close < 0 || (nested >= 0 && nested < close)) {
-      issues.push({ at: i, text: `“(” at ${i + 1} is never closed` });
-      i++;
-      continue;
-    }
-    const body = text.slice(i + 1, close);
+    const body = text.slice(i + 2, close);
     const ipa = xsampaToIpa(body);
     const unknown = known ? [...new Set(ipa)].filter((c) => !known.has(c)) : [];
-    const g: Group = { start: i, end: close + 1, body, ipa, unknown, empty: !ipa };
+    const g: Group = { start: i, end: close + 2, body, ipa, unknown, empty: !ipa };
     groups.push(g);
-    if (g.empty) issues.push({ at: i, text: `“()” at ${i + 1} is empty` });
-    else if (unknown.length) issues.push({ at: i, text: `(${body}): no token on this model for ${unknown.map((c) => `“${c}”`).join(' ')}` });
-    i = close + 1;
+    if (g.empty) issues.push({ at: i, text: `“[[]]” at ${i + 1} is empty` });
+    else if (unknown.length) issues.push({ at: i, text: `[[${body}]]: no token on this model for ${unknown.map((c) => `“${c}”`).join(' ')}` });
+    i = close + 2;
   }
   return { groups, issues };
 }
 
+export interface PauseTokens {
+  markers: string[];
+  seconds: number[];
+}
+
+/** What the server reads in text besides words: pronunciation groups and pause marks (null: read as plain text). */
+export interface TextMarks {
+  phonemes: PronTokens | null;
+  pauses: PauseTokens | null;
+}
+
+export const NO_MARKS: TextMarks = { phonemes: null, pauses: null };
+
+/** `<0.5>` / `<1s>`: [start, end) the mark; `cut` the start of the whitespace before it (the sent marker replaces [cut, end)). */
+export interface Pause {
+  start: number;
+  end: number;
+  cut: number;
+  seconds: number;
+}
+
+export interface Marks {
+  groups: Group[];
+  groupIssues: PronIssue[];
+  pauses: Pause[];
+  pauseIssues: PronIssue[];
+}
+
+const PAUSE = /<\s*(\d+(?:\.\d+)?|\.\d+)\s*s?\s*>/g;
+
+/** The groups and pause marks of `text`, with what the server would refuse in them. */
+export function parseMarks(text: string, marks: TextMarks, where: 'line' | 'edit' = 'line'): Marks {
+  const { groups, issues: groupIssues } = parsePron(text, marks.phonemes);
+  const pauses: Pause[] = [];
+  const pauseIssues: PronIssue[] = [];
+  for (const m of text.matchAll(PAUSE)) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (groups.some((g) => start < g.end && end > g.start)) continue;
+    let cut = start;
+    while (cut > 0 && /\s/.test(text[cut - 1])) cut--;
+    pauses.push({ start, end, cut, seconds: Number(m[1]) });
+    const at = `“${m[0]}” at ${start + 1}`;
+    if (where === 'edit') pauseIssues.push({ at: start, text: `${at}: speech edits take no pauses` });
+    else if (marks.pauses === null) pauseIssues.push({ at: start, text: `${at}: this server has no pause tokens` });
+    else if (!/\S/.test(text.slice(0, cut))) pauseIssues.push({ at: start, text: `${at} follows no word` });
+  }
+  return { groups, groupIssues, pauses, pauseIssues };
+}
+
 /** One message about what would make the server refuse the text, or null. */
-export function pronProblem(text: string, tokens: PronTokens | null): string | null {
-  if (!tokens) return null;
-  const { issues } = parsePron(text, tokens);
-  return issues.length ? `Pronunciation: ${issues.map((x) => x.text).join('; ')}.` : null;
+export function textProblem(text: string, marks: TextMarks, where: 'line' | 'edit' = 'line'): string | null {
+  const { groupIssues, pauseIssues } = parseMarks(text, marks, where);
+  const out: string[] = [];
+  if (marks.phonemes && groupIssues.length) out.push(`Pronunciation: ${groupIssues.map((x) => x.text).join('; ')}.`);
+  if (pauseIssues.length) out.push(`Pauses: ${pauseIssues.map((x) => x.text).join('; ')}.`);
+  return out.length ? out.join(' ') : null;
+}
+
+/** The pause token nearest `seconds` (the lower one on ties). */
+export function nearestPause(p: PauseTokens, seconds: number): number {
+  let best = 0;
+  for (let j = 1; j < p.seconds.length; j++) if (Math.abs(seconds - p.seconds[j]) < Math.abs(seconds - p.seconds[best])) best = j;
+  return best;
 }
 
 export interface Sent {
@@ -163,23 +228,31 @@ export interface Sent {
   map: (at: number, side: -1 | 1) => number;
 }
 
-/** The text as sent: each well-formed group becomes open + IPA + close; everything else is unchanged. */
-export function toSent(text: string, tokens: PronTokens | null): Sent {
-  if (!tokens) return { text, map: (at) => at };
-  const { groups } = parsePron(text, tokens);
-  if (!groups.length) return { text, map: (at) => at };
+/**
+ * The text as sent: each well-formed group becomes open + IPA + close, each pause mark (with the whitespace before
+ * it) the nearest pause marker; everything else is unchanged.
+ */
+export function toSent(text: string, marks: TextMarks): Sent {
+  if (!marks.phonemes && !marks.pauses) return { text, map: (at) => at };
+  const parsed = parseMarks(text, marks);
+  const atoms: { start: number; end: number; sent: string }[] = [];
+  const ph = marks.phonemes;
+  if (ph) for (const g of parsed.groups) if (!g.empty) atoms.push({ start: g.start, end: g.end, sent: ph.open_marker + g.ipa + ph.close_marker });
+  const pz = marks.pauses;
+  if (pz) for (const p of parsed.pauses) atoms.push({ start: p.cut, end: p.end, sent: pz.markers[nearestPause(pz, p.seconds)] });
+  if (!atoms.length) return { text, map: (at) => at };
+  atoms.sort((a, b) => a.start - b.start);
   let out = '';
   let pos = 0;
   const pieces: { d0: number; d1: number; s0: number; s1: number; group: boolean }[] = [];
-  for (const g of groups) {
-    if (g.start > pos) {
-      pieces.push({ d0: pos, d1: g.start, s0: out.length, s1: out.length + g.start - pos, group: false });
-      out += text.slice(pos, g.start);
+  for (const a of atoms) {
+    if (a.start > pos) {
+      pieces.push({ d0: pos, d1: a.start, s0: out.length, s1: out.length + a.start - pos, group: false });
+      out += text.slice(pos, a.start);
     }
-    const sent = g.empty ? text.slice(g.start, g.end) : tokens.open_marker + g.ipa + tokens.close_marker;
-    pieces.push({ d0: g.start, d1: g.end, s0: out.length, s1: out.length + sent.length, group: !g.empty });
-    out += sent;
-    pos = g.end;
+    pieces.push({ d0: a.start, d1: a.end, s0: out.length, s1: out.length + a.sent.length, group: true });
+    out += a.sent;
+    pos = a.end;
   }
   pieces.push({ d0: pos, d1: text.length, s0: out.length, s1: out.length + text.length - pos, group: false });
   out += text.slice(pos);
@@ -217,16 +290,22 @@ export function ipaGloss(ipa: string): string {
 
 /**
  * `text` as it was spoken, in plain words: each group replaced by what the recognizer heard there (`heard[k]` for
- * the k-th group), else a spelling guessed from its IPA. For texts that describe recorded audio (transcripts).
+ * the k-th group), else a spelling guessed from its IPA; pause marks removed. For texts that describe recorded
+ * audio (transcripts).
  */
 export function spokenText(text: string, heard: (string | null | undefined)[] = []): string {
-  const { groups } = parsePron(text, null);
+  const { groups, pauses } = parseMarks(text, NO_MARKS);
+  const atoms: { start: number; end: number; with: string }[] = [];
+  groups.forEach((g, k) => {
+    if (!g.empty) atoms.push({ start: g.start, end: g.end, with: heard[k]?.trim() || ipaGloss(g.ipa) });
+  });
+  for (const p of pauses) atoms.push({ start: p.cut, end: p.end, with: '' });
+  atoms.sort((a, b) => a.start - b.start);
   let out = '';
   let pos = 0;
-  groups.forEach((g, k) => {
-    if (g.empty) return;
-    out += text.slice(pos, g.start) + (heard[k]?.trim() || ipaGloss(g.ipa));
-    pos = g.end;
-  });
+  for (const a of atoms) {
+    out += text.slice(pos, a.start) + a.with;
+    pos = a.end;
+  }
   return out + text.slice(pos);
 }

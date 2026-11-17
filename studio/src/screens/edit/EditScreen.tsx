@@ -717,7 +717,7 @@ function Takes() {
                   const h = t.verify!.groups?.[k]?.heard;
                   return (
                     <span class={`take-heard-item${h ? '' : ' is-missing'}`}>
-                      <span class="mono">({w.body})</span> {h ? <>heard as ‘{h}’</> : 'nothing recognized there'}
+                      <span class="mono">[[{w.body}]]</span> {h ? <>heard as ‘{h}’</> : 'nothing recognized there'}
                     </span>
                   );
                 })}

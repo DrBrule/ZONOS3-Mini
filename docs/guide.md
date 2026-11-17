@@ -398,8 +398,8 @@ markers, open / close 8200 / 8201, phones from 8202, start 8338, pauses 8339-834
   per IPA symbol (rather than the lexicon's average of about one) reflects that
   spoken duration follows the word, and respelled names and short words carry more
   letters per phone.
-- **Studio.** Pronunciations are typed in X-SAMPA inside parentheses, e.g.
-  `I met (S@vQn)`; the studio shows the IPA each group becomes (flagging symbols the
+- **Studio.** Pronunciations are typed in X-SAMPA inside double square brackets, e.g.
+  `I met [[S@vQn]]`; the studio shows the IPA each group becomes (flagging symbols the
   model has no token for) and sends U+E000 IPA U+E001 groups. On checkpoints
   trained on parenthesized IPA (no `phoneme_tokens` in `/v2/capabilities`) it
   sends `(IPA)` instead. Stress marks, syllable dots and spaces are dropped as in

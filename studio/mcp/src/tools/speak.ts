@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { langLabel } from '../../../src/lib/languages';
 import { voiceServerLanguage } from '../../../src/lib/voices';
 import { uid } from '../../../src/lib/math';
-import { pronProblem } from '../../../src/lib/pron';
+import { textProblem } from '../../../src/lib/pron';
 import type { Values } from '../../../src/state/engine';
 import type { StoredTake } from '../../../src/state/projectSchema';
 import { buildRequest, capsContext, PREVIEW_SEED, remapSpans } from '../../../src/state/requests';
@@ -91,7 +91,7 @@ export function registerSpeakTool(server: McpServer) {
       const persona = own ?? resolveVoice(doc, ctx.speakers, a.voice);
       if (a.voice) line.voice = persona.id;
       if (delivery || spanInput.length) line.spans = anchorSpans(line.text, delivery, spanInput);
-      const problem = pronProblem(line.text, ctx.caps.phoneme_tokens ?? null);
+      const problem = textProblem(line.text, { phonemes: ctx.caps.phoneme_tokens ?? null, pauses: ctx.caps.pause_tokens ?? null });
       if (problem) throw new Error(problem);
 
       const ctxReq = capsContext(ctx.caps, doc.settings);

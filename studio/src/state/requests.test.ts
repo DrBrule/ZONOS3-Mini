@@ -38,7 +38,7 @@ describe('span-only controls (emphasis)', () => {
 });
 
 describe('decoder', () => {
-  const ctx: RequestContext = { phonemeTokens: null, decoder: null, laci: 'off', laciLanguages: [], startToken: false };
+  const ctx: RequestContext = { phonemeTokens: null, pauseTokens: null, decoder: null, laci: 'off', laciLanguages: [], startToken: false };
 
   it('is left out for the server default', () => {
     expect('decoder' in buildRequest(spec, ctx, d, text, 1)).toBe(false);
@@ -64,7 +64,7 @@ describe('decoder', () => {
 });
 
 describe('laci', () => {
-  const ctx: RequestContext = { phonemeTokens: null, decoder: null, laci: 'stream', laciLanguages: ['en_us'], startToken: false };
+  const ctx: RequestContext = { phonemeTokens: null, pauseTokens: null, decoder: null, laci: 'stream', laciLanguages: ['en_us'], startToken: false };
 
   it('streamed: laci on with the progressive decode of the request defaults, on both A/B sides', () => {
     for (const x of [{}, { unsteered: true }]) {
@@ -99,7 +99,7 @@ describe('laci', () => {
 });
 
 describe('start immediately', () => {
-  const ctx: RequestContext = { phonemeTokens: null, decoder: null, laci: 'off', laciLanguages: [], startToken: true };
+  const ctx: RequestContext = { phonemeTokens: null, pauseTokens: null, decoder: null, laci: 'off', laciLanguages: [], startToken: true };
 
   it('goes out on both A/B sides when the checkpoint has a start token', () => {
     expect(buildRequest(spec, ctx, d, text, 1, { startImmediately: true }).start_immediately).toBe(true);

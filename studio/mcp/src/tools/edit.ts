@@ -7,7 +7,7 @@ import type { Dose, EditRequest } from '../../../src/api';
 import { requestDecoder } from '../../../src/lib/decoders';
 import { EDIT_LANGUAGES, langLabel } from '../../../src/lib/languages';
 import { uid } from '../../../src/lib/math';
-import { parsePron } from '../../../src/lib/pron';
+import { NO_MARKS, parseMarks, parsePron } from '../../../src/lib/pron';
 import type { Source } from '../../../src/state/edit';
 import { controlDose } from '../../../src/state/engine';
 import type { ProjectDoc, StoredVersion } from '../../../src/state/projectSchema';
@@ -83,6 +83,7 @@ export function registerEditTools(server: McpServer) {
       const picks = [src.line !== undefined, !!src.file, !!src.url, !!src.current].filter(Boolean).length;
       if (picks !== 1) throw new Error('Pass exactly one source: line, file, url or current');
       if (parsePron(a.target_text, c.phoneme_tokens ?? null).groups.length) throw new Error('Pronunciation groups in edits are not supported here; use the Studio Edit screen');
+      if (parseMarks(a.target_text, NO_MARKS).pauses.length) throw new Error('Speech edits take no pauses: remove the <…> marks.');
       // The clip's language: `language`, else (a take) the language it was rendered in, else the project's.
       const fallback = EDIT_LANGUAGES.includes(doc.settings.language) ? doc.settings.language : 'en_us';
       let lang = a.language ?? fallback;

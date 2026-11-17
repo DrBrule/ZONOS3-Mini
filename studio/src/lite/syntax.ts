@@ -3,7 +3,9 @@
  * completion all read. Offsets are UTF-16 indices into the whole script.
  */
 
-export const DIRECTIVES: readonly string[] = ['language', 'mode', 'seed', 'laci', 'decoder', 'gap', 'baseline', 'voice'];
+import { parsePron } from '../lib/pron';
+
+export const DIRECTIVES: readonly string[] = ['language', 'mode', 'seed', 'laci', 'decoder', 'gap', 'baseline', 'start', 'voice'];
 export const NUMBER = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
 export const VOICE = /^([^:{}\[\]=@#,\\]+?)\s*(?:=\s*([^{}]+?))?\s*(?:\{([^{}]*)\})?$/;
 /** After a voice name at the start of a line: optional `{delivery}`, then the colon. */
@@ -141,11 +143,26 @@ function braces(text: string, base: number, m: RegExpExecArray): ItemList | null
   return itemList(text, open + 1, close, open, close);
 }
 
+/**
+ * `text` with each well-formed pronunciation group of [from, to) blanked to U+0001s (same length): the grammar's
+ * regexes then never see a group's brackets or its X-SAMPA "{" / "}" / ":", and `[[[S@vQn]]]{…}` is a span.
+ */
+function maskGroups(text: string, from: number, to: number): string {
+  let out = text;
+  for (const g of parsePron(text.slice(from, to), null).groups) {
+    const a = from + g.start;
+    const b = from + g.end;
+    out = out.slice(0, a) + '\u0001'.repeat(b - a) + out.slice(b);
+  }
+  return out;
+}
+
 function speechLine(text: string, base: LineBase, candidates: readonly string[]): ScriptLine {
   const { loc } = base;
   const escape = text[loc.from] === '\\' ? loc.from : null;
   const s0 = escape === null ? loc.from : loc.from + 1;
-  const rest = text.slice(s0, loc.to);
+  const masked = maskGroups(text, s0, loc.to);
+  const rest = masked.slice(s0, loc.to);
   /** The first candidate `rest` starts with (ignoring case) that `re` matches after: its Word, where `re` ran, the match. */
   const afterName = (re: RegExp): { name: Word; at: number; m: RegExpExecArray } | null => {
     for (const c of candidates) {
@@ -179,18 +196,19 @@ function speechLine(text: string, base: LineBase, candidates: readonly string[])
   const said = word(text, prefix ? prefix.colon + 1 : s0, loc.to);
   const spans: SpanMark[] = [];
   let tail = 0;
-  for (const m of said.text.matchAll(SPAN)) {
+  const saidMasked = masked.slice(said.from, said.to);
+  for (const m of saidMasked.matchAll(SPAN)) {
     const a = said.from + m.index;
-    const w = m[1];
+    const w = text.slice(a + 1, a + 1 + m[1].length);
     const end = a + m[0].length;
     spans.push({ from: a, to: end, words: { from: a + 1, to: a + 1 + w.length, text: w }, items: itemList(text, a + w.length + 3, end - 1, a + w.length + 2, end - 1) });
     tail = m.index + m[0].length;
   }
   let draftSpan: SpanMark | null = null;
-  const d = /\[([^\[\]]*)\]\{([^{}]*)$/.exec(said.text.slice(tail));
+  const d = /\[([^\[\]]*)\]\{([^{}]*)$/.exec(saidMasked.slice(tail));
   if (d) {
     const a = said.from + tail + d.index;
-    const w = d[1];
+    const w = text.slice(a + 1, a + 1 + d[1].length);
     draftSpan = { from: a, to: loc.to, words: { from: a + 1, to: a + 1 + w.length, text: w }, items: itemList(text, a + w.length + 3, loc.to, a + w.length + 2, null) };
   }
   return { ...base, kind: 'speech', escape, prefix, draft, stray, text: said, spans, draftSpan };

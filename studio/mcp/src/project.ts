@@ -9,6 +9,7 @@ import { uid } from '../../src/lib/math';
 import { homePin } from '../../src/state/atlas';
 import type { Act } from '../../src/state/app';
 import { DEFAULT_SETTINGS, remapIds, SCHEMA, settingsOf, summaryOf, type ProjectDoc } from '../../src/state/projectSchema';
+import { migrateDoc } from '../../src/state/migrate';
 import { caps } from './backend';
 import { config } from './config';
 import { state } from './state';
@@ -131,7 +132,7 @@ export async function openProject(projectId?: string, opts: { create?: boolean }
   }
   state.activeProjectId = id;
   const warnings: string[] = [];
-  const saved = p.data as unknown as ProjectDoc;
+  const saved = migrateDoc(p.data as unknown as ProjectDoc);
   const map = await reconcile(id, saved, warnings);
   const doc = map.size ? (JSON.parse(remapIds(JSON.stringify(saved), map)) as ProjectDoc) : saved;
   doc.settings = settingsOf(doc.settings);

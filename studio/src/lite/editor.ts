@@ -239,6 +239,12 @@ export function mountScriptEditor({ el, root, popup }: { el: HTMLElement; root: 
         e.preventDefault();
         accept(open.active);
         break;
+      case 'Enter':
+        // ⌘↵ / Ctrl+Enter still generates (the page's listener); ⇧↵ and ⌥↵ type a newline.
+        if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) break;
+        e.preventDefault();
+        accept(open.active);
+        break;
       case 'ArrowLeft':
       case 'ArrowRight':
       case 'Home':

@@ -1,6 +1,6 @@
 /**
  * Pronunciation input UI shared by every text that is synthesized (Direct lines, the Cast preview
- * line): IPA chips for "(X-SAMPA)" groups, flagged problems, "Pronounce…" (lexicon lookup of a selection via
+ * line): IPA chips for "[[X-SAMPA]]" groups, flagged problems, "Pronounce…" (lexicon lookup of a selection via
  * /v2/phonemize) and a small editor for one group.
  */
 import { computed, effect, signal } from '@preact/signals';
@@ -12,8 +12,8 @@ import { ipaToXsampa, parsePron, xsampaToIpa } from '../lib/pron';
 import { backend, notify, projectSettings, pronTokens } from '../state/app';
 import { Icon } from './Icon';
 
-/** A render refused locally for its pronunciation groups (the input's marks already list the problems). */
-export const isPronError = (e: string | null | undefined) => !!e?.startsWith('Pronunciation:');
+/** A render refused locally for its pronunciation groups or pause marks (the input's marks already list the problems). */
+export const isPronError = (e: string | null | undefined) => /^(Pronunciation|Pauses):/.test(e ?? '');
 
 export const pronOn = computed(() => !!pronTokens.value);
 export const phonemizeOn = computed(() => pronOn.value && !!backend.value?.pron.phonemize_enabled);
@@ -42,7 +42,7 @@ export async function phonemizeRange(text: string, start: number, end: number): 
     return null;
   }
   const language = lookupLanguage.value;
-  const parts = text.slice(start, end).split(/(\([^()]*\))/);
+  const parts = text.slice(start, end).split(/(\[\[[^\[\]]*\]\])/);
   phonemizing.value = true;
   try {
     const results = await Promise.all(
@@ -56,7 +56,7 @@ export async function phonemizeRange(text: string, start: number, end: number): 
         const x = ipaToXsampa(s.ipa);
         if (s.status === 'guessed') marks[x] = s.text;
         else delete marks[x];
-        return `(${x})`;
+        return `[[${x}]]`;
       })
       .join('');
     guessed.value = marks;
@@ -168,7 +168,7 @@ function GroupEditor({ st }: { st: EditState }) {
   };
   const save = () => {
     if (!ipa || bad.length) return;
-    const g = `(${value.trim()})`;
+    const g = `[[${value.trim()}]]`;
     st.replace(st.start, st.end, g);
     if (guessed.value[value.trim()] !== undefined || guessed.value[st.body] !== undefined) {
       const { [st.body]: _, [value.trim()]: __, ...rest } = guessed.value;
@@ -197,7 +197,7 @@ function GroupEditor({ st }: { st: EditState }) {
           value={value}
           spellcheck={false}
           aria-describedby="pron-ipa"
-          onInput={(e) => setValue((e.currentTarget as HTMLInputElement).value.replace(/[()]/g, ''))}
+          onInput={(e) => setValue((e.currentTarget as HTMLInputElement).value.replace(/[\[\]]/g, ''))}
           onKeyDown={(e) => {
             if (e.key === 'Enter') (e.preventDefault(), save());
             if (e.key === 'Escape') (e.preventDefault(), e.stopPropagation(), close());
@@ -229,7 +229,7 @@ function GroupEditor({ st }: { st: EditState }) {
 
 /**
  * The groups of `text` as IPA chips (click to edit), and what would make the server refuse it. Without phoneme
- * tokens: one quiet note that parentheses are read as text.
+ * tokens: one quiet note that [[…]] is read as text.
  */
 export function PronMarks({ text, replace, issuesOnly }: { text: string; replace?: EditState['replace']; issuesOnly?: boolean }) {
   const tokens = pronTokens.value;
@@ -237,8 +237,8 @@ export function PronMarks({ text, replace, issuesOnly }: { text: string; replace
   if (!tokens) {
     return parsed.groups.length ? (
       <span class="pron-marks">
-        <span class="pron-off" title="This server reads parentheses as plain text: it has no pronunciation input">
-          ( ) read as text
+        <span class="pron-off" title="This server reads [[…]] as plain text: it has no pronunciation input">
+          [[ ]] read as text
         </span>
       </span>
     ) : null;
@@ -253,7 +253,7 @@ export function PronMarks({ text, replace, issuesOnly }: { text: string; replace
           return (
             <button
               class={`pron-chip${g.unknown.length ? ' is-bad' : ''}${check ? ' is-check' : ''}`}
-              title={`(${g.body}) → ${g.ipa}${check ? ` · guessed for “${check}”, check it` : ''}${g.unknown.length ? ` · no token for ${g.unknown.join(' ')}` : ''}${replace ? ' · click to edit' : ''}`}
+              title={`[[${g.body}]] → ${g.ipa}${check ? ` · guessed for “${check}”, check it` : ''}${g.unknown.length ? ` · no token for ${g.unknown.join(' ')}` : ''}${replace ? ' · click to edit' : ''}`}
               disabled={!replace}
               onClick={(e) => replace && openPronEditor(e.currentTarget as HTMLElement, g, replace)}
             >
@@ -280,14 +280,15 @@ export function PronHelp() {
   if (!pronOn.value) {
     return (
       <div class="hint pron-help">
-        <p>This server has no pronunciation lexicon: parentheses are read as text.</p>
+        <p>This server has no pronunciation lexicon: [[…]] is read as text.</p>
       </div>
     );
   }
   return (
     <div class="pron-help">
       <p class="hint">
-        Write a pronunciation in X-SAMPA between parentheses: “I met <span class="mono">(S@vQn)</span>” reads <span class="mono">ʃəvɒn</span>.
+        Write a pronunciation in X-SAMPA between double square brackets: “I met <span class="mono">[[S@vQn]]</span>” reads <span class="mono">ʃəvɒn</span>.{' '}
+        Pauses: “slid, <span class="mono">&lt;0.5&gt;</span> on” (about 0.25, 0.5, 1 or 2 s).
         {phonemizeOn.value ? ' Or select words and press /ə/ to look them up.' : ''}
       </p>
       {phonemizeOn.value && languages.value.length > 1 && (

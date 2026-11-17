@@ -1,5 +1,5 @@
 /**
- * The project document's shape (`schema` 1) and the pure helpers on it. Type imports only: the MCP server
+ * The project document's shape (`schema` 2) and the pure helpers on it. Type imports only: the MCP server
  * (`studio/mcp`) imports this module in Node, where signals and the browser globals are not available.
  */
 import type { Rendered, SpeakerMode } from '../api';
@@ -11,7 +11,8 @@ import type { MediaInfo } from './media';
 import type { Script, Take } from './script';
 import type { Spot } from './who';
 
-export const SCHEMA = 1;
+/** 2: pronunciation groups are written "[[X-SAMPA]]" (1: "(X-SAMPA)"; `migrate.ts` converts). */
+export const SCHEMA = 2;
 
 /**
  * Settings of the open project: the language (Direct renders, Edit clips, pronunciation lookups), the

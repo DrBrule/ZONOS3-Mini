@@ -214,7 +214,8 @@ const ROWS: [string, string][] = [
   ['double-click', 'reset a slider or the mood pad'],
   ['scroll on the Who map', 'pitch (the map focused, or with ⌘ / Ctrl)'],
   ['+ − Delete', 'a mood landmark: stronger, weaker, off'],
-  ['(S@vQn)', 'X-SAMPA pronunciation in a line (phoneme-token checkpoints); click its IPA chip to edit'],
+  ['[[S@vQn]]', 'X-SAMPA pronunciation in a line (phoneme-token checkpoints); click its IPA chip to edit'],
+  ['<0.5>', 'a pause of about that many seconds after a word (0.25, 0.5, 1 or 2; checkpoints with pause tokens)'],
   ['/ə/', 'look up the selected words’ pronunciations'],
   ['?', 'this sheet'],
 ];

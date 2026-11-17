@@ -285,7 +285,7 @@ A Direct take made under another LACI mode reads **LACI changed**, and the Direc
 ## Pronunciation input
 
 On phoneme-token checkpoints (`/v2/capabilities.phoneme_tokens`), every text that is synthesized (Direct
-lines, the Cast preview line) takes X-SAMPA pronunciations in parentheses, “I met (S@vQn)” (`_` ties, symbols
+lines, the Cast preview line) takes X-SAMPA pronunciations in double square brackets, “I met [[S@vQn]]” (`_` ties, symbols
 without an X-SAMPA spelling are typed as-is, stress / dots / spaces
 dropped). Each group shows its IPA inline (Direct) or as a chip; symbols without a token on the checkpoint and
 unclosed / empty groups are flagged and block the render. Click a group to edit it (X-SAMPA with live IPA, per
@@ -293,13 +293,13 @@ symbol validity). `/ə/` (Pronounce, when `phonemize_enabled`) looks the selecte
 and writes them as groups; guessed words are marked “check”, ambiguous / unknown / unsupported ones are left as
 text with a note (Direct: one undo step; inputs: ⌘Z while focused). Requests carry each group as U+E000 IPA
 U+E001, and `control_spans` offsets refer to that sent text (a painted boundary inside a group takes the whole
-group). Without phoneme tokens parentheses are plain text and the Direct rail says which checkpoint enables it
+group). Without phoneme tokens `[[…]]` is plain text and the Direct rail says which checkpoint enables it
 (`SERVE_MODEL=<phoneme checkpoint> PHONEME_LEXICON=…`). On an edit checkpoint that also has phoneme
 tokens (`speech_editing` + `phoneme_tokens`), the Edit screen's target text takes groups the same way (chips,
 group editor, `/ə/`; invalid ones block Generate). A group is one target word for the word diff and region
-planning (it never equals a spelled word, so "Siobhan" → "(S@vO:n)" is a one-word replacement); `target_text` is
+planning (it never equals a spelled word, so "Siobhan" → "[[S@vO:n]]" is a one-word replacement); `target_text` is
 sent with U+E000 IPA U+E001, `original_text` / `original_words` stay plain. The words-heard check treats a group as
-a wildcard word, and each take lists what was recognized at it (`verify.groups`: “(S@vO:n) heard as ‘shivon’”).
+a wildcard word, and each take lists what was recognized at it (`verify.groups`: “[[S@vO:n]] heard as ‘shivon’”).
 Keeping such a take writes the groups as heard into the new version's transcript (re-aligned); sending it back to
 Direct keeps the groups in the line. The original transcript (Fix the transcript) is always plain, and a
 take whose text has groups is opened by transcription (without speech recognition: typed, starting from the text
@@ -307,6 +307,14 @@ with each group spelled as a guess). Without phoneme tokens the target text is p
 and `src/fixtures/phonemize.ts` stand in; `?phon=fixture` forces them, `?phon=0` a checkpoint without tokens. Offline
 mode is the edit + phoneme checkpoint (the fixture edit engine sends `verify.groups`); `?edit=fixture&phon=fixture`
 forces the same against a live server.
+
+Projects saved before `[[…]]` (schema 1 wrote groups as `(X-SAMPA)`) are converted when opened: every group the old
+parser accepted becomes `[[…]]`, painted spans shift with it, and stored requests (the sent form) are unchanged.
+
+Pause marks: on checkpoints with pause tokens (`/v2/capabilities.pause_tokens`), `<0.5>` / `<1s>` after a word asks
+for a pause of about that many seconds (the nearest of the checkpoint's buckets, about 0.25, 0.5, 1 or 2 s); the mark
+and the whitespace before it go out as the pause marker. Without pause tokens, or in Edit target text, a mark blocks the
+render. Angle text that isn't a number (`<laugh/>`) is plain text.
 
 ## Edit screen
 

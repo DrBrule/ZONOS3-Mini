@@ -4,7 +4,7 @@ import type { components } from '../api/schema';
 import { requestDecoder } from '../lib/decoders';
 import { laciFields, type LaciMode } from '../lib/laci';
 import { clamp } from '../lib/math';
-import { toSent, type PronTokens, type Sent } from '../lib/pron';
+import { toSent, type PauseTokens, type PronTokens, type Sent } from '../lib/pron';
 import { mixAt } from './atlas';
 import type { Design } from './design';
 import { controlDose, controlUsable, toDoses, type Values } from './engine';
@@ -37,6 +37,8 @@ export interface RequestExtras {
 /** What a request needs from the backend and the project besides the design (Studio: `requestContext`). */
 export interface RequestContext {
   phonemeTokens: PronTokens | null;
+  /** The checkpoint's pause tokens (`<0.5>` marks), or null. */
+  pauseTokens: PauseTokens | null;
   /** The `decoder` to send (`requestDecoder`): null = the server default, left out of the request. */
   decoder: string | null;
   /** The project's LACI mode (`laciFields`); undefined = off. */
@@ -49,11 +51,12 @@ export interface RequestContext {
 
 /** A server's capabilities with a project's settings → the request context (the MCP server, the lite page's script; the studio's own is `state/app.ts` `requestContext`, over its backend). */
 export function capsContext(
-  c: Pick<components['schemas']['Capabilities'], 'phoneme_tokens' | 'decoders' | 'laci_languages' | 'start_token'>,
+  c: Pick<components['schemas']['Capabilities'], 'phoneme_tokens' | 'pause_tokens' | 'decoders' | 'laci_languages' | 'start_token'>,
   settings: Pick<ProjectSettings, 'decoder' | 'laci'>,
 ): RequestContext {
   return {
     phonemeTokens: c.phoneme_tokens ?? null,
+    pauseTokens: c.pause_tokens ?? null,
     // The project's decoder where this server serves it, else the default.
     decoder: requestDecoder(c.decoders ?? [], settings.decoder),
     // Languages without heads here run without LACI.
@@ -122,8 +125,9 @@ export function controlSpans(s: ControlsSpec, spans: Span[] | undefined, d: Desi
 }
 
 export function buildRequest(s: ControlsSpec, ctx: RequestContext, d: Design, text: string, seed: number, x: RequestExtras = {}): GenerateRequest {
-  // Pronunciation groups go out as U+E000 IPA U+E001 on phoneme-token checkpoints; offsets follow the sent text.
-  const sent = toSent(text, ctx.phonemeTokens);
+  // Pronunciation groups go out as U+E000 IPA U+E001 on phoneme-token checkpoints, pause marks as pause tokens;
+  // offsets follow the sent text.
+  const sent = toSent(text, { phonemes: ctx.phonemeTokens, pauses: ctx.pauseTokens });
   const req: GenerateRequest = {
     ...s.ui.request_defaults,
     text: sent.text,

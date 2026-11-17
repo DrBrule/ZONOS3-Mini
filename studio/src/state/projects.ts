@@ -23,6 +23,7 @@ import { cast, ownVoices, refreshSpeakers, speakers, speakersError, uploading, t
 import { EMBEDDING_TYPE, MediaSink } from './media';
 import { emptyDoc, LEGACY_KEYS, legacyDoc, restore, snapshot, speakerUses } from './projectDoc';
 import { remapIds, SCHEMA, summaryOf, type ProjectDoc, type ProjectSettings } from './projectSchema';
+import { migrateDoc } from './migrate';
 import { BrowserStore, matchesHash, metaOf, readdress, ServerStore, type ProjectMeta, type Store } from './projectStore';
 import { script, scriptDraft, scriptTextDirty, takes } from './script';
 import { confirm } from '../components/ConfirmDialog';
@@ -304,8 +305,10 @@ function untitledName(): string {
 /** Open a stored project; `b` (boot) lands with the first project, so no screen renders the empty defaults. */
 async function load(id: string, b?: Backend) {
   const { json, revision } = await store!.read(id);
-  const doc = JSON.parse(json) as ProjectDoc;
-  if (doc.schema > SCHEMA) throw new Error('it was saved by a newer version of the studio');
+  const stored = JSON.parse(json) as ProjectDoc;
+  if (stored.schema > SCHEMA) throw new Error('it was saved by a newer version of the studio');
+  // Older documents are converted (schema 1's "(X-SAMPA)" groups); the first autosave stores the new schema.
+  const doc = migrateDoc(stored);
   await refreshSpeakers();
   // Without the voice list nothing can be matched: don't re-register (or report) anything; say why instead.
   const { doc: next, map, reRegistered, issues } = speakersError.value ? { doc, map: new Map<string, string>(), reRegistered: [], issues: [`Couldn’t list voices: ${speakersError.value}`] } : await reconcile(doc);
@@ -318,8 +321,8 @@ async function load(id: string, b?: Backend) {
     current.value = meta;
   });
   unmap = new Map([...map].map(([saved, live]) => [live, saved]));
-  // The document as stored (saves map ids back): only a real change, such as a new bench voice, is saved.
-  savedBody = JSON.stringify({ ...doc, updatedAt: 0 });
+  // The document as stored (saves map ids back): only a real change, such as a new bench voice or a migration, is saved.
+  savedBody = JSON.stringify({ ...stored, updatedAt: 0 });
   saveState.value = 'saved';
   saveError.value = null;
   restoreReport.value = { reRegistered, issues };

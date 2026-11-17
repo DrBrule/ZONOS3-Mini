@@ -6,8 +6,8 @@
  */
 import { computed, effect, signal, untracked } from '@preact/signals';
 import type { GenerateRequest, Rendered } from '../api';
-import { notify, pronTokens, requestContext, spec } from '../state/app';
-import { pronProblem } from '../lib/pron';
+import { notify, pauseTokens, pronTokens, requestContext, spec } from '../state/app';
+import { textProblem } from '../lib/pron';
 import { design } from '../state/design';
 import { speakerLanguage } from '../state/library';
 import { load, persist } from '../state/persist';
@@ -170,7 +170,7 @@ export function startPreview() {
     const s = spec.value;
     const auto = autoRender.value;
     if (!d.baseId || !text) return;
-    const problem = pronProblem(text, pronTokens.value);
+    const problem = textProblem(text, { phonemes: pronTokens.value, pauses: pauseTokens.value });
     if (problem) {
       untracked(() => {
         reqA = reqB = null;

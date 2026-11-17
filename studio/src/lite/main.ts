@@ -36,6 +36,7 @@ import {
 } from './api';
 import type { ScriptEditor } from './editor';
 import { StreamPlayer } from './player';
+import { LineCache } from './cache';
 import type * as ScriptModule from './script';
 import type { Issue, ScriptEnv, ScriptResult } from './script';
 import { CLIP_MAX_S, clipLengthProblem, readiness, selectedVoice, type Clip, type Source, type VoiceState } from './voice';
@@ -140,6 +141,11 @@ let editor: ScriptEditor | null = null;
 let checked: ScriptResult | null = null;
 let generation: AbortController | null = null;
 const player = new StreamPlayer(SAMPLE_RATE);
+/** Script lines already generated this session, by request (10 minutes of audio): Generate again regenerates only what changed. */
+const lineCache = new LineCache(600 * SAMPLE_RATE);
+const randomSeed = () => Math.floor(Math.random() * 1e6);
+/** The seed of script lines before any @seed while Advanced → Seed is blank: fixed per session, so unchanged lines are reused. */
+let sessionSeed = randomSeed();
 const preview = new Audio();
 let previewUrl = '';
 
@@ -494,7 +500,7 @@ function scriptEnv(k: Kit, caps: Capabilities): ScriptEnv {
     selected: selectedVoice(s),
     selectedWhy: r.ok ? null : r.why,
     language: ui.language.value,
-    seed: ui.seed.value === '' ? null : Number(ui.seed.value),
+    seed: ui.seed.value === '' ? sessionSeed : Number(ui.seed.value),
     laci: (ui.laci.value || 'off') as LaciMode,
   };
 }
@@ -631,7 +637,7 @@ async function generateText() {
   };
   Object.assign(body, laciFields(ui.laci.value as LaciMode, laciLanguages, body.language ?? 'en_us'));
   if (ui.seed.value !== '') body.seed = Number(ui.seed.value);
-  await speak([{ line: 0, request: body }], 0, { text, label: voice.label }, ctrl);
+  await speak([{ line: 0, request: body, gap: 0 }], { text, label: voice.label }, ctrl, null);
 }
 
 async function generateScript() {
@@ -651,12 +657,15 @@ async function generateScript() {
   checked = result;
   showIssues(result);
   if (!result.render) return fail('Fix the script first');
-  const { parts, gap } = result.render;
-  await speak(parts, gap, { text: parts.map((p) => p.text).join(' / '), label: 'Script' }, ctrl);
+  const { parts } = result.render;
+  await speak(parts, { text: parts.map((p) => p.text).join(' / '), label: 'Script' }, ctrl, lineCache);
 }
 
-/** Streams `parts` in order into one take, `gap` seconds of silence between them: the waveform, the player, one WAV. */
-async function speak(parts: { line: number; request: GenerateRequest }[], gap: number, take: { text: string; label: string }, ctrl: AbortController) {
+/**
+ * Streams `parts` in order into one take, each after its `gap` seconds of silence: the waveform, the player, one WAV.
+ * With `cache`, a part whose request was generated before plays from it, and each line that finishes is kept.
+ */
+async function speak(parts: { line: number; request: GenerateRequest; gap: number }[], take: { text: string; label: string }, ctrl: AbortController, cache: LineCache | null) {
   ui.status.textContent = 'Generating…';
   samples = 0;
   drawn = -1;
@@ -669,16 +678,29 @@ async function speak(parts: { line: number; request: GenerateRequest }[], gap: n
   let firstAudio = 0;
   let at = 0;
   let seed: string | null = null;
-  const silence = new Float32Array(Math.round(gap * SAMPLE_RATE));
+  let reused = 0;
   try {
     await player.begin();
     for (; at < parts.length; at++) {
-      if (at > 0) {
+      const part = parts[at];
+      if (at > 0 && part.gap > 0) {
+        const silence = new Float32Array(Math.round(part.gap * SAMPLE_RATE));
         append(silence);
         player.push(silence);
       }
+      const key = JSON.stringify(part.request);
+      const hit = cache?.get(key);
+      if (hit) {
+        append(hit);
+        player.push(hit);
+        reused++;
+        seed = String(part.request.seed);
+        ui.status.textContent = `Line ${at + 1} of ${parts.length}: reused`;
+        continue;
+      }
+      const from = samples;
       ({ seed } = await generateStream(
-        parts[at].request,
+        part.request,
         (pcm) => {
           firstAudio ||= performance.now();
           append(pcm);
@@ -687,6 +709,7 @@ async function speak(parts: { line: number; request: GenerateRequest }[], gap: n
         },
         ctrl.signal,
       ));
+      cache?.put(key, audio.slice(from, samples));
     }
     player.flush();
     if (!samples) throw new ApiError(200, 'The server returned no audio.');
@@ -695,11 +718,11 @@ async function speak(parts: { line: number; request: GenerateRequest }[], gap: n
     ui.resultDownload.download = `${slug(take.label)}${seed ? `-seed${seed}` : ''}.wav`;
     ui.resultDownload.hidden = false;
     ui.resultMeta.textContent = seconds(samples);
-    ui.resultMeta.title = `seed ${seed ?? 'unknown'} · first audio after ${((firstAudio - t0) / 1000).toFixed(2)} s`;
+    ui.resultMeta.title = `seed ${seed ?? 'unknown'}${firstAudio ? ` · first audio after ${((firstAudio - t0) / 1000).toFixed(2)} s` : ''}`;
     ui.seedUse.hidden = seed == null;
     ui.result.dataset.samples = String(samples);
     ui.result.dataset.seed = seed ?? '';
-    ui.status.textContent = `Done: ${seconds(samples)} of audio.`;
+    ui.status.textContent = `Done: ${seconds(samples)} of audio.${reused ? ` ${reused} of ${parts.length} lines reused.` : ''}`;
   } catch (e) {
     player.stop();
     if (ctrl.signal.aborted) ui.status.textContent = 'Stopped.';
@@ -772,7 +795,11 @@ ui.language.addEventListener('change', () => {
   updateLaciNote();
   recheckScript();
 });
-ui.seed.addEventListener('input', recheckScript);
+ui.seed.addEventListener('input', () => {
+  // Blank again: lines before any @seed get a fresh take.
+  sessionSeed = randomSeed();
+  recheckScript();
+});
 
 ui.clipPick.addEventListener('click', () => ui.clipFile.click());
 ui.clipFile.addEventListener('change', async () => {

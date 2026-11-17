@@ -384,7 +384,7 @@ function LineText({ line }: { line: Line }) {
                     }
                   : undefined
             }
-            title={g ? `(${g.body}) → ${g.ipa}${check ? ` · guessed for “${check}”, check it` : ''}${g.unknown.length ? ` · no token for ${g.unknown.join(' ')}` : ''} · click to edit${paintTitle ? ` · ${paintTitle}` : ''}` : paintTitle || undefined}
+            title={g ? `[[${g.body}]] → ${g.ipa}${check ? ` · guessed for “${check}”, check it` : ''}${g.unknown.length ? ` · no token for ${g.unknown.join(' ')}` : ''} · click to edit${paintTitle ? ` · ${paintTitle}` : ''}` : paintTitle || undefined}
           >
             {line.text.slice(from, to)}
           </span>

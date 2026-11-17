@@ -1,5 +1,5 @@
 /**
- * The project document (`schema` 1): what every act holds, as JSON, with audio / embeddings referred to by content
+ * The project document (`schema` 2): what every act holds, as JSON, with audio / embeddings referred to by content
  * hash (`media.ts`). `snapshot` reads the signals into a document, `restore` puts one back. Undo history, drafts and
  * in-flight work are per session; voices the project created carry their clip or embedding so they can be
  * registered again. Keys older documents carry that the studio no longer has (a retired act's block) are ignored on
@@ -21,6 +21,7 @@ import { load } from './persist';
 import { failedLines, holdStaleToast, lineBusy, lineError, lineRequest, newScript, script, scripts, takes, type Script, type Take } from './script';
 import { voiceOrigins } from './who';
 import { DEFAULT_SETTINGS, SCHEMA, settingsOf, summaryOf, type ProjectDoc, type ProjectHead, type ProjectSettings, type StoredAudio, type StoredEditDoc } from './projectSchema';
+import { migrateDoc } from './migrate';
 
 type OldScene = NonNullable<ProjectDoc['scene']>['scene'];
 
@@ -56,13 +57,15 @@ export const LEGACY_KEYS = ['design', 'cast', 'voiceOrigins', 'previewText', 'sc
 
 export function legacyDoc(head: Pick<ProjectDoc, 'id' | 'name'>): ProjectDoc {
   const d = emptyDoc(head, { ...DEFAULT_SETTINGS, language: load('pron.language', 'en_us') });
-  return {
+  // localStorage predates [[…]]: its texts are schema 1.
+  return migrateDoc({
     ...d,
+    schema: 1,
     cast: { design: load('design', d.cast.design), personas: load('cast', []), origins: load('voiceOrigins', {}), previewText: load('previewText', '') },
     // Scene lines (the retired act) join the script; they had no saved renders.
     direct: { script: withScene(load('script', d.direct.script), load<OldScene | undefined>('scene', undefined)), takes: {} },
     edit: { doc: null, clipLanguages: load('edit.languages', {}) },
-  };
+  });
 }
 
 /** The open project as a document; media not yet stored land in `sink.pending`. */

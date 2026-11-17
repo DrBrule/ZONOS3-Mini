@@ -1,0 +1,121 @@
+# NIGHT FERRY v3. Run three times, changing only the marked @laci line.
+@language en_gb
+@mode reference
+@decoder full_mr
+@gap 0.5
+@baseline chatty 1, pace -0.5
+
+@voice Ann = Imogen en British F 1 {mode reference}
+@voice AnnE = Imogen en British F 1 {preset BBC newsreader, age 1, accent irish 1.2, mode embedding}
+@voice Me {deep 2}
+@voice Deckhand {pitch 1.5, range 2, bright 2, husky 1, room 3}
+@voice Mate {gender -2}
+@voice Steward {gender 2}
+@voice Skipper = Cillian en Irish M 1 {preset Gravelly old man, authority 3, raspy 2}
+
+# 01 seed, context off: takes 1 and 2 identical, take 3 different
+@laci off
+@seed 42
+This is the Night Ferry.
+@seed 42
+This is the Night Ferry.
+@seed 7
+This is the Night Ferry.
+
+# 02 decoder A/B on seed 42: same timing as take 1 of block 01, different timbre
+@seed 42
+@decoder keep2_plain
+This is the Night Ferry.
+@decoder full_mr
+@seed 42
+
+# vary this line per run: off | stream | whole
+@laci whole
+
+# 03 step-1 voice, then four voices designed from it; Mate and Steward give the sign of gender
+Level check. One, two. One, two.
+Me: Level check. One, two. One, two.
+Deckhand: Level check. One, two. One, two.
+Mate: Level check. One, two. One, two.
+Steward: Level check. One, two. One, two.
+
+# 04 mode A/B: reference, then embedding; date expansion under en_gb
+Ann: Good evening. It's midnight on Saturday 14 November, and these are the headlines.
+AnnE: Good evening. It's midnight on Saturday 14 November, and these are the headlines.
+
+# 05 comma list on a line; 9:15 must not be parsed as a second prefix
+Ann {calm 2, pace -0.5}: The ferry ramp jammed at 9:15 this evening, with 212 cars and one very patient coach party on the wrong side of it.
+
+# 06 pronunciation in place of the word: Siobhan, Cobh. Keogh is left to the g2p on purpose.
+Ann: Harbourmaster [[S@vQn]] Keogh said the 1,200 passengers booked through [[k@Uv]] will be carried on Sunday, and that the fare stays at £4.50.
+
+# 07 delivery with no voice
+{calm 2}: That's the news. Now for the part you stayed up for.
+
+# 08 spans: one word; several words; opening an unprefixed line; against punctuation; non-emphasis tag
+Me: I [really]{emphasis 4} mean it. Nobody on that quay saw it coming.
+Me: [Not one single lorry]{emphasis 3} got off that boat.
+[Nobody]{emphasis 4} rang the harbourmaster.
+Ann {calm 2}: It was [stuck]{emphasis 2}. [Properly]{emphasis 4} stuck. On such a [lovely]{happy 3} evening.
+
+# 09 strength ladder up to the safe ceiling; Cobh unassisted, compare with 06
+Me: Give us the football, Ann. Like you mean it.
+Ann {happy 1}: Cobh Ramblers two, Bray Wanderers nil.
+Ann {happy 2.5}: Cobh Ramblers two, Bray Wanderers nil.
+Ann {happy 4}: Cobh Ramblers two, Bray Wanderers nil.
+
+# 10 library voice by its full name, spaces and digit included: plain, then with deliveries
+Savannah en American F 1: Hello? Is this the Night Ferry?
+Savannah en American F 1 {confused 3}: I'm on the car deck. I think I've been on the car deck since nine.
+Savannah en American F 1 {scared 8, hesitant 5}: Okay, the boat just moved. Is it supposed to move?
+Deckhand {lively 5}: It's a boat, madam.
+Savannah en American F 1 {happy 3}: Oh! They're bringing tea around.
+
+# 11 angry, projection at the safe ceiling, sad; span directly before punctuation
+Skipper {angry 3}: I'll say this the once. Nobody touches that ramp.
+Skipper {projection 2, arousal 3}: Bow doors! [Now]{emphasis 4}!
+Ann {sad 4}: The tea trolley did not survive the crossing.
+
+# 12 valence and arousal, negative then positive, same text
+Me {valence -3, arousal -3}: Well. That's the ramp fixed.
+Me {valence 3, arousal 3}: Well. That's the ramp fixed.
+
+# 13 escapes: unknown prefix, known voice prefix, comment marker, directive keyword. All read aloud in the step-1 voice.
+Me: Your messages, as they came in.
+\PS: tell the newsreader the bridge at home was worse.
+\Ann: you said nil. It was two nil. I was there.
+\#NightFerry is the only thing keeping deck 3 awake.
+\@voice of reason here. Just open the bow doors.
+
+# 14 gap: 1.5 s between these two lines, whichever side @gap applies to
+@gap 1.5
+Ann {calm 2}: And now.
+Ann {calm 2}: The shipping forecast.
+@gap 0.5
+
+# 15 baseline to the read end of chatty; colon and four-digit times inside text
+@baseline chatty -3, pace -1
+Ann {calm 2}: Issued at 2345. The general synopsis at 1800: low, Rockall, 982, moving northeast.
+Ann {calm 2}: Lundy, Fastnet. Southwest 5 to 7, occasionally gale 8 at first, veering northwest 4 or 5 later. Rough, becoming moderate. Rain, then showers. Moderate, occasionally poor.
+@baseline chatty 1, pace -0.5
+
+# 16 LACI look-back: stress lands on "fifty" only if the reply hears the line before it
+Ann: So the 9:15 sailed on time.
+Me: The 9:50 sailed on time.
+
+# 17 LACI look-ahead: "reed" in the first pair, "red" in the second, only under whole
+Me: I read the harbour log.
+Me: Every morning, cover to cover.
+Me: I read the harbour log.
+Me: Last night, cover to cover.
+
+# 18 voice declared mid-script; language switch and back; foreign accent in English
+@voice Purser = Gaspard fr M 1 {accent fra 1.5, soft 2}
+@language fr_fr
+Purser: Mesdames et messieurs, l'embarquement des véhicules commencera dans dix minutes, pont trois.
+@language en_gb
+Purser: Ladies and gentlemen, vehicle boarding will begin in ten minutes, deck three.
+
+# 19 close
+{calm 2}: You've been listening to the Night Ferry.
+Mind how you go.

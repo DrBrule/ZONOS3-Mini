@@ -1,14 +1,14 @@
 /**
  * The lite page's Script input: a line-oriented text for what Studio's Cast, Direct and project settings do
  * (designed voices, a voice per line, whole-line and per-word delivery, the script baseline, the gap between lines,
- * language, seed, LACI, decoder), compiled into the requests Studio's own composer (`buildRequest`) sends for the
+ * language, seed, LACI, decoder, start immediately), compiled into the requests Studio's own composer (`buildRequest`) sends for the
  * same settings. Pure: no DOM, no signals; the page loads it on first use of Script.
  */
 import type { ControlsSpec, SpeakerMode } from '../api';
 import { unknownDecoder } from '../lib/decoders';
 import { LACI_MODES, type LaciMode } from '../lib/laci';
 import { langLabel } from '../lib/languages';
-import { pronProblem } from '../lib/pron';
+import { textProblem } from '../lib/pron';
 import { voiceServerLanguage } from '../lib/voices';
 import { homePin, mixAt, pinForMix, type Pin } from '../state/atlas';
 import { controlUsable, presetToValues, type Values } from '../state/engine';
@@ -16,7 +16,7 @@ import { DEFAULT_GAP, GAP_RANGE } from '../state/lines';
 import { buildRequest, capsContext } from '../state/requests';
 import { findSpeaker, layerSpans, modeFor, resolveAccents, resolveValues, type AccentResolution } from '../state/resolve';
 import type { Capabilities, GenerateRequest, Speaker } from './api';
-import { DIRECTIVES, NUMBER, parseScript, speakerNames, VOICE_NAME_MAX, type ItemList, type Loc, type ScriptLine } from './syntax';
+import { DIRECTIVES, NUMBER, parseScript, speakerNames, VOICE_NAME_MAX, type ItemList, type Loc } from './syntax';
 
 export interface Issue {
   /** 1-based line of the script; 0: the whole script. */
@@ -34,7 +34,7 @@ export interface ScriptEnv {
   steering: boolean;
   /** `GET /v2/speakers`, every mode (not the lite select's embedding-only list). */
   speakers: Speaker[];
-  caps: Pick<Capabilities, 'phoneme_tokens' | 'decoders' | 'laci_languages' | 'start_token'>;
+  caps: Pick<Capabilities, 'phoneme_tokens' | 'pause_tokens' | 'decoders' | 'laci_languages' | 'start_token'>;
   /** The Language select's codes. */
   languages: readonly string[];
   /** Step 1's voice. */
@@ -43,8 +43,8 @@ export interface ScriptEnv {
   selectedWhy: string | null;
   /** Step 2's Language select. */
   language: string;
-  /** Advanced → Seed (null: blank). */
-  seed: number | null;
+  /** Advanced → Seed, else the page's session seed (lines before any @seed). */
+  seed: number;
   /** Advanced → LACI ('off' when the select is hidden or empty). */
   laci: LaciMode;
 }
@@ -53,14 +53,13 @@ export interface ScriptPart {
   line: number;
   label: string;
   text: string;
+  /** Silence before this part (s); 0 for the first. */
+  gap: number;
   request: GenerateRequest;
 }
 
 export interface ScriptRender {
   parts: ScriptPart[];
-  /** Silence between parts (s). */
-  gap: number;
-  seed: number;
 }
 
 export interface ScriptResult {
@@ -112,18 +111,29 @@ interface Items {
   /** The preset's key in `spec.ui.presets`. */
   preset?: string;
   mode?: SpeakerMode;
+  /** `start` (a line prefix only): speech from the first frame. */
+  start?: Loc;
   /** Where each was written, by control id, `accent:<id>`, `preset` or `mode`; a later repeat wins. */
   locs: Record<string, Loc>;
 }
 
-/** `control value, …` (on a @voice also `preset Name`, `accent id strength`, `mode m`); a later repeat wins. */
-function readItems(list: ItemList | null, spec: ControlsSpec, steering: boolean, onVoice: boolean): Items {
+/**
+ * `control value, …` (on a @voice also `preset Name`, `accent id strength`, `mode m`; in a line prefix also
+ * `start`); a later repeat wins. `where`: the list's place (`other`: @baseline, a span).
+ */
+function readItems(list: ItemList | null, spec: ControlsSpec, steering: boolean, where: 'voice' | 'prefix' | 'other'): Items {
   const out: Items = { values: {}, accents: {}, locs: {} };
   for (const item of list?.items ?? []) {
     const words = [item.head.text, ...item.args.map((w) => w.text)];
     const head = words[0].toLowerCase();
+    if (head === 'start') {
+      if (where !== 'prefix') throw new LocError('start goes in a line’s {…} before the colon: {start}: Hello.', item);
+      if (words.length > 1) throw new LocError('start takes no value.', item);
+      out.start = item;
+      continue;
+    }
     const special = head === 'preset' || head === 'accent' || head === 'mode';
-    if (special && !onVoice) throw new LocError('preset, accent and mode go on a @voice line.', item);
+    if (special && where !== 'voice') throw new LocError('preset, accent and mode go on a @voice line.', item);
     if (head === 'mode') {
       const mode = words[1]?.toLowerCase() ?? '';
       if (words.length !== 2 || !isMode(mode)) throw new LocError('mode takes embedding or reference.', item);
@@ -189,17 +199,19 @@ interface VoiceDef {
   /** The library voice after `=`; null: step 1's voice (`fromSelected`), or a reference that failed. */
   base: Speaker | null;
   fromSelected: boolean;
+  /** It has a preset, a value or an accent: it speaks in mode embedding unless its own `mode` says otherwise. */
+  designed: boolean;
   values: Values;
   pin: Pin;
-  /** Set by `mode`, or embedding by a preset; unset: the base voice's mode for @mode. */
+  /** Set by `mode`, or embedding by a preset; unset: embedding when designed, else the base voice's mode for @mode. */
   mode?: SpeakerMode;
   /** The mode it speaks in on its base, once checked against it. */
   speaks?: SpeakerMode;
 }
 
-/** The mode a @voice speaks in on `base`; throws what `base` can't do in it. */
+/** The mode a @voice speaks in on `base` (@mode, `preferred`, only picks for voices without a design); throws what `base` can't do in it. */
 function voiceMode(spec: ControlsSpec, def: VoiceDef, base: Speaker, preferred: SpeakerMode): SpeakerMode {
-  const mode = def.mode ?? modeFor(base, preferred);
+  const mode = def.mode ?? (def.designed ? 'embedding' : modeFor(base, preferred));
   if (!base.speaker_modes.includes(mode)) throw new Error(`${base.label} has no ${mode} mode.`);
   for (const id of Object.keys(def.values)) {
     const c = spec.ui.controls.find((x) => x.id === id);
@@ -208,6 +220,17 @@ function voiceMode(spec: ControlsSpec, def: VoiceDef, base: Speaker, preferred: 
   const mix = mixAt(def.pin, spec.ui.accents);
   if (spec.ui.accents.some((a) => mix[a.id] && !controlUsable(spec, a, mode))) throw new Error('Accents need mode embedding.');
   return mode;
+}
+
+/** The settings positional directives set, from their line on. */
+interface Settings {
+  language?: string;
+  seed?: number;
+  laci?: LaciMode;
+  decoder?: string;
+  gap?: number;
+  baseline?: Values;
+  start?: boolean;
 }
 
 interface Speech {
@@ -220,11 +243,18 @@ interface Speech {
   text: string;
   delivery: Values | null;
   placed: { start: number; end: number; values: Values }[];
+  /** The settings in force at the line. */
+  seed: number;
+  laci: LaciMode;
+  decoder: string | null;
+  gap: number;
+  baseline: Values | undefined;
+  /** Undefined until a @language: each voice's own (`voiceServerLanguage`). */
+  language: string | undefined;
+  start: boolean;
 }
 
-type DirectiveLine = Extract<ScriptLine, { kind: 'directive' }>;
-
-export function compileScript(text: string, env: ScriptEnv, random: () => number = Math.random): ScriptResult {
+export function compileScript(text: string, env: ScriptEnv): ScriptResult {
   const { spec, steering } = env;
   const errors: Issue[] = [];
   const warnings: Issue[] = [];
@@ -243,9 +273,8 @@ export function compileScript(text: string, env: ScriptEnv, random: () => number
     };
 
   const tree = parseScript(text, speakerNames(env.speakers));
-  // Pass 1: directives (global, anywhere).
-  const set: { language?: string; mode?: SpeakerMode; seed?: number; laci?: LaciMode; decoder?: string; gap?: number; baseline?: Values } = {};
-  const seen = new Map<string, DirectiveLine>();
+  // Pass 1 (global, anywhere): unknown directives, @mode (once), the @voice definitions.
+  const global: { mode?: SpeakerMode; modeLine?: number } = {};
   const voices = new Map<string, VoiceDef>();
   for (const l of tree) {
     if (l.kind !== 'directive') continue;
@@ -253,113 +282,123 @@ export function compileScript(text: string, env: ScriptEnv, random: () => number
     at(l, l.arg, () => {
       const kw = l.name ?? l.at.text.slice(1);
       if (!l.name || !DIRECTIVES.includes(kw)) throw new LocError(`Unknown directive @${kw}. Directives: ${DIRECTIVES.map((d) => `@${d}`).join(', ')}.`, l.at);
-      const arg = l.arg.text;
-      const a = arg.toLowerCase();
-      if (kw !== 'voice') {
-        const first = seen.get(kw);
-        if (first) throw new LocError(`@${kw} is set twice (first on line ${first.line}).`, l.at);
-        seen.set(kw, l);
+      if (kw === 'mode') {
+        if (global.modeLine !== undefined) throw new LocError(`@mode is set twice (first on line ${global.modeLine}).`, l.at);
+        global.modeLine = l.line;
+        const a = l.arg.text.toLowerCase();
+        if (!isMode(a)) throw new Error('@mode takes embedding or reference.');
+        global.mode = a;
+        return;
       }
-      switch (kw) {
-        case 'language': {
-          const code = env.languages.find((c) => c.toLowerCase() === a || langLabel(c).toLowerCase() === a);
-          if (!code) throw new Error(`No language “${arg}”. Languages: ${env.languages.map((c) => `${c} (${langLabel(c)})`).join(', ')}`);
-          set.language = code;
-          break;
-        }
-        case 'mode':
-          if (!isMode(a)) throw new Error('@mode takes embedding or reference.');
-          set.mode = a;
-          break;
-        case 'seed':
-          if (!/^\d+$/.test(arg) || Number(arg) > SEED_MAX) throw new Error(`@seed takes a whole number from 0 to ${SEED_MAX}.`);
-          set.seed = Number(arg);
-          break;
-        case 'laci': {
-          const mode = LACI_MODES.find((x) => x === a);
-          if (!mode) throw new Error('@laci takes off, stream or whole.');
-          if (mode !== 'off' && !env.caps.laci_languages.length) throw new Error('This server has no LACI alignment heads.');
-          set.laci = mode;
-          break;
-        }
-        case 'decoder': {
-          const served = env.caps.decoders ?? [];
-          if (!served.some((d) => d.id === arg)) throw new Error(unknownDecoder(arg, served));
-          set.decoder = arg;
-          break;
-        }
-        case 'gap': {
-          const [lo, hi] = GAP_RANGE;
-          if (!NUMBER.test(arg) || Number(arg) < lo || Number(arg) > hi) throw new Error(`@gap takes seconds from ${lo} to ${hi}.`);
-          set.gap = Number(arg);
-          break;
-        }
-        case 'baseline':
-          set.baseline = wholeLine(spec, readItems(l.items, spec, steering, false), warnAt(l));
-          break;
-        case 'voice': {
-          const v = l.voice!;
-          if (!v.valid) throw new Error('Write @voice Name = library voice {…}, or @voice Name {…} for the voice of step 1.');
-          const name = v.name.text;
-          if (name.length > VOICE_NAME_MAX) throw new LocError(`A voice name has at most ${VOICE_NAME_MAX} characters.`, v.name);
-          const first = voices.get(name.toLowerCase());
-          if (first) throw new LocError(`Voice “${name}” is defined twice (first on line ${first.line}).`, v.name);
-          // Registered before its checks: lines naming a broken voice report only the voice's own error.
-          const def: VoiceDef = { name, line: l.line, loc: fix(l, v.items ?? v.name), base: null, fromSelected: v.eq === null, values: {}, pin: homePin() };
-          voices.set(name.toLowerCase(), def);
-          if (v.ref) {
-            const base = findSpeaker(env.speakers, v.ref.text);
-            if (!base) throw new LocError(`No library voice “${v.ref.text}”. Voices: ${env.speakers.map((s) => s.label).join(', ')}.`, v.ref);
-            def.base = base;
-          }
-          // Studio's order whatever the written one: preset, values, accents, mode.
-          const items = readItems(v.items, spec, steering, true);
-          if (items.preset) {
-            if (items.mode === 'reference') throw new LocError('A preset sets mode embedding.', items.locs.preset);
-            const p = presetToValues(spec.ui.presets[items.preset]);
-            def.values = p.values;
-            def.pin = pinForMix(p.accents, spec.ui.accents, def.pin.tab);
-            def.mode = 'embedding';
-          }
-          if (Object.keys(items.values).length) {
-            const values = resolveItems(spec, items, 'design', warnAt(l));
-            for (const id of Object.keys(items.values)) {
-              if (values[id]) def.values[id] = values[id];
-              else delete def.values[id];
-            }
-          }
-          if (Object.keys(items.accents).length) {
-            const list = v.items!;
-            let r: AccentResolution;
-            try {
-              r = resolveAccents(spec, items.accents);
-            } catch (e) {
-              const bad = Object.keys(items.accents).find((id) => !spec.ui.accents.some((x) => x.id === id));
-              throw new LocError(e instanceof Error ? e.message : String(e), bad ? items.locs[`accent:${bad}`] : list);
-            }
-            warnAt(l)(r.warnings, list);
-            def.pin = r.pin;
-          }
-          if (items.mode) def.mode = items.mode;
-          break;
+      if (kw !== 'voice') return;
+      const v = l.voice!;
+      if (!v.valid) throw new Error('Write @voice Name = library voice {…}, or @voice Name {…} for the voice of step 1.');
+      const name = v.name.text;
+      if (name.length > VOICE_NAME_MAX) throw new LocError(`A voice name has at most ${VOICE_NAME_MAX} characters.`, v.name);
+      const first = voices.get(name.toLowerCase());
+      if (first) throw new LocError(`Voice “${name}” is defined twice (first on line ${first.line}).`, v.name);
+      // Registered before its checks: lines naming a broken voice report only the voice's own error.
+      const def: VoiceDef = { name, line: l.line, loc: fix(l, v.items ?? v.name), base: null, fromSelected: v.eq === null, designed: false, values: {}, pin: homePin() };
+      voices.set(name.toLowerCase(), def);
+      if (v.ref) {
+        const base = findSpeaker(env.speakers, v.ref.text);
+        if (!base) throw new LocError(`No library voice “${v.ref.text}”. Voices: ${env.speakers.map((s) => s.label).join(', ')}.`, v.ref);
+        def.base = base;
+      }
+      // Studio's order whatever the written one: preset, values, accents, mode.
+      const items = readItems(v.items, spec, steering, 'voice');
+      def.designed = !!items.preset || Object.keys(items.values).length > 0 || Object.keys(items.accents).length > 0;
+      if (items.preset) {
+        if (items.mode === 'reference') throw new LocError('A preset sets mode embedding.', items.locs.preset);
+        const p = presetToValues(spec.ui.presets[items.preset]);
+        def.values = p.values;
+        def.pin = pinForMix(p.accents, spec.ui.accents, def.pin.tab);
+        def.mode = 'embedding';
+      }
+      if (Object.keys(items.values).length) {
+        const values = resolveItems(spec, items, 'design', warnAt(l));
+        for (const id of Object.keys(items.values)) {
+          if (values[id]) def.values[id] = values[id];
+          else delete def.values[id];
         }
       }
+      if (Object.keys(items.accents).length) {
+        const list = v.items!;
+        let r: AccentResolution;
+        try {
+          r = resolveAccents(spec, items.accents);
+        } catch (e) {
+          const bad = Object.keys(items.accents).find((id) => !spec.ui.accents.some((x) => x.id === id));
+          throw new LocError(e instanceof Error ? e.message : String(e), bad ? items.locs[`accent:${bad}`] : list);
+        }
+        warnAt(l)(r.warnings, list);
+        def.pin = r.pin;
+      }
+      if (items.mode) def.mode = items.mode;
     });
   }
 
-  const preferred = set.mode ?? 'embedding';
+  const preferred = global.mode ?? 'embedding';
   // Each voice against its base: a library voice's now, step 1's when it has one (after the clone, else).
   for (const def of voices.values()) {
     const base = def.fromSelected ? env.selected : def.base;
     if (base && !errors.some((e) => e.line === def.line)) at(def, def.loc, () => (def.speaks = voiceMode(spec, def, base, preferred)));
   }
-  const laci = set.laci ?? env.laci;
-  const ctx = capsContext(env.caps, { decoder: set.decoder ?? null, laci });
 
-  // Pass 2: speech lines (the parse resolved their names against every @voice, wherever it is defined).
+  // Pass 2, in order: the other directives set what follows them; each speech line takes the settings in force
+  // (the parse resolved its name against every @voice, wherever it is defined).
+  const cur: Settings = {};
   const speech: Speech[] = [];
   let anySpeech = false;
   for (const l of tree) {
+    if (l.kind === 'directive') {
+      const kw = l.name;
+      if (!kw || kw === 'mode' || kw === 'voice' || !DIRECTIVES.includes(kw)) continue;
+      at(l, l.arg, () => {
+        const arg = l.arg.text;
+        const a = arg.toLowerCase();
+        switch (kw) {
+          case 'language': {
+            const code = env.languages.find((c) => c.toLowerCase() === a || langLabel(c).toLowerCase() === a);
+            if (!code) throw new Error(`No language “${arg}”. Languages: ${env.languages.map((c) => `${c} (${langLabel(c)})`).join(', ')}`);
+            cur.language = code;
+            break;
+          }
+          case 'seed':
+            if (!/^\d+$/.test(arg) || Number(arg) > SEED_MAX) throw new Error(`@seed takes a whole number from 0 to ${SEED_MAX}.`);
+            cur.seed = Number(arg);
+            break;
+          case 'laci': {
+            const mode = LACI_MODES.find((x) => x === a);
+            if (!mode) throw new Error('@laci takes off, stream or whole.');
+            if (mode !== 'off' && !env.caps.laci_languages.length) throw new Error('This server has no LACI alignment heads.');
+            cur.laci = mode;
+            break;
+          }
+          case 'decoder': {
+            const served = env.caps.decoders ?? [];
+            if (!served.some((d) => d.id === arg)) throw new Error(unknownDecoder(arg, served));
+            cur.decoder = arg;
+            break;
+          }
+          case 'gap': {
+            const [lo, hi] = GAP_RANGE;
+            if (!NUMBER.test(arg) || Number(arg) < lo || Number(arg) > hi) throw new Error(`@gap takes seconds from ${lo} to ${hi}.`);
+            cur.gap = Number(arg);
+            break;
+          }
+          case 'baseline':
+            cur.baseline = wholeLine(spec, readItems(l.items, spec, steering, 'other'), warnAt(l));
+            break;
+          case 'start':
+            if (a !== 'on' && a !== 'off') throw new Error('@start takes on or off.');
+            if (a === 'on' && !env.caps.start_token) throw new Error('This server has no start token.');
+            cur.start = a === 'on';
+            break;
+        }
+      });
+      continue;
+    }
     if (l.kind !== 'speech') continue;
     anySpeech = true;
     at(l, l.loc, () => {
@@ -369,7 +408,9 @@ export function compileScript(text: string, env: ScriptEnv, random: () => number
       const voice = k === undefined ? null : (voices.get(k) ?? null);
       const speaker = k === undefined || voice ? null : (env.speakers.find((s) => s.label.toLowerCase() === k) ?? env.speakers.find((s) => s.id.toLowerCase() === k) ?? null);
       if (l.stray) warn([`“${l.stray.text}:” is spoken: no voice is named ${l.stray.text}.`], l.stray);
-      const delivery = l.prefix?.items ? wholeLine(spec, readItems(l.prefix.items, spec, steering, false), warn) : null;
+      const prefix = l.prefix?.items ? readItems(l.prefix.items, spec, steering, 'prefix') : null;
+      if (prefix?.start && !env.caps.start_token) throw new LocError('This server has no start token.', prefix.start);
+      const delivery = prefix && Object.keys(prefix.values).length ? wholeLine(spec, prefix, warn) : null;
       // Spans: `[words]{items}` → the words, painted; other brackets stay text.
       const rest = l.text.text;
       let said = '';
@@ -379,7 +420,7 @@ export function compileScript(text: string, env: ScriptEnv, random: () => number
         said += rest.slice(from, sp.from - l.text.from);
         const words = sp.words.text;
         if (!words.trim()) throw new LocError('A [ ]{…} span needs words.', sp);
-        const values = resolveItems(spec, readItems(sp.items, spec, steering, false), 'delivery', warn);
+        const values = resolveItems(spec, readItems(sp.items, spec, steering, 'other'), 'delivery', warn);
         const start = said.length + words.length - words.trimStart().length;
         placed.push({ start, end: start + words.trim().length, values });
         said += words;
@@ -389,7 +430,22 @@ export function compileScript(text: string, env: ScriptEnv, random: () => number
       const lead = said.length - said.trimStart().length;
       const spoken = said.trim();
       if (!spoken) throw new Error('Nothing to say on this line.');
-      speech.push({ line: l.line, loc: l.text, voice, speaker, text: spoken, delivery, placed: placed.map((p) => ({ ...p, start: p.start - lead, end: p.end - lead })) });
+      speech.push({
+        line: l.line,
+        loc: l.text,
+        voice,
+        speaker,
+        text: spoken,
+        delivery,
+        placed: placed.map((p) => ({ ...p, start: p.start - lead, end: p.end - lead })),
+        seed: cur.seed ?? env.seed,
+        laci: cur.laci ?? env.laci,
+        decoder: cur.decoder ?? null,
+        gap: cur.gap ?? DEFAULT_GAP,
+        baseline: cur.baseline,
+        language: cur.language,
+        start: !!prefix?.start || cur.start === true,
+      });
     });
   }
   if (!anySpeech) errors.push({ line: 0, from: 0, to: 0, message: 'Nothing to say: write a line of text.' });
@@ -397,9 +453,6 @@ export function compileScript(text: string, env: ScriptEnv, random: () => number
 
   let render: ScriptRender | null = null;
   if (!errors.length) {
-    // One seed for every line, as Direct renders every first take.
-    const seed = set.seed ?? env.seed ?? Math.floor(random() * 1e6);
-    const language = set.language ?? env.language;
     const parts: ScriptPart[] = [];
     const noHeads = new Set<string>();
     let waiting = false;
@@ -415,20 +468,21 @@ export function compileScript(text: string, env: ScriptEnv, random: () => number
         const design = s.voice
           ? { baseId: base.id, mode: s.voice.speaks!, values: s.voice.values, pin: s.voice.pin }
           : { baseId: base.id, mode: modeFor(base, preferred), values: {}, pin: homePin() };
-        // Direct's rule: a default voice speaks its own language.
-        const lang = voiceServerLanguage(base, language);
-        const pron = pronProblem(s.text, ctx.phonemeTokens);
-        if (pron) throw new Error(pron);
-        if (laci !== 'off' && !env.caps.laci_languages.includes(lang) && !noHeads.has(lang)) {
+        // A @language in force wins for every voice; before one, Direct's rule: a default voice speaks its own language.
+        const lang = s.language ?? voiceServerLanguage(base, env.language);
+        const ctx = capsContext(env.caps, { decoder: s.decoder, laci: s.laci });
+        const problem = textProblem(s.text, { phonemes: ctx.phonemeTokens, pauses: ctx.pauseTokens });
+        if (problem) throw new Error(problem);
+        if (s.laci !== 'off' && !env.caps.laci_languages.includes(lang) && !noHeads.has(lang)) {
           noHeads.add(lang);
           warnAt(s)([`No alignment heads for ${langLabel(lang)}: its lines run without LACI.`], s.loc);
         }
         const spans = layerSpans(s.text.length, s.delivery, s.placed);
-        const request = buildRequest(spec, ctx, design, s.text, seed, { extra: set.baseline, spans, language: lang });
-        parts.push({ line: s.line, label: s.voice?.name ?? base.label, text: s.text, request: { ...request, stream: true, format: 'pcm' } });
+        const request = buildRequest(spec, ctx, design, s.text, s.seed, { extra: s.baseline, spans, language: lang, startImmediately: s.start });
+        parts.push({ line: s.line, label: s.voice?.name ?? base.label, text: s.text, gap: parts.length ? s.gap : 0, request: { ...request, stream: true, format: 'pcm' } });
       });
     }
-    if (!errors.length && !waiting) render = { parts, gap: set.gap ?? DEFAULT_GAP, seed };
+    if (!errors.length && !waiting) render = { parts };
   }
   const byLine = (x: Issue, y: Issue) => x.line - y.line;
   return { errors: errors.sort(byLine), warnings: warnings.sort(byLine), usesSelected, render };
