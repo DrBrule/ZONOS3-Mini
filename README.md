@@ -198,7 +198,7 @@ The studio's steering controls come from `STEER_BUNDLE`.
   `servers/sgl/scripts/serve.sh` and `python -m zonos3.reference` load with the release LM (other checkpoints:
   `SERVE_TEXT_ROWS` / `--phoneme-rows`; GGUF `convert_gguf.py lm --phoneme-rows`; `gguf/backbone-ptq-edit.gguf` already
   has them), or a checkpoint merged with them (`tools/add_text_extra_rows.py`). "Phonemize selection" needs
-  `PHONEME_LEXICON=<lexicon dir>` (`lexicons/gold_phonemes_v1`, not published).
+  `PHONEME_LEXICON=<lexicon dir>` (`lexicons/gold_phonemes_v1`: in no model repo; the Space ships it as `lexicon/`).
   `uv sync --group phonemize` adds espeak-ng guesses for `POST /v2/phonemize` (GPL-3.0, opt-in).
 - **Accent adapters** need `--accent-adapters <dir>`.
 

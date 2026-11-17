@@ -339,8 +339,8 @@ compares against.
 E2-TTS "X2" pronunciation control: a word can be written as its IPA. The release LM `lm/rate30_20k_r2grpo` has
 phoneme tokens trained on it in lingua (`apps/zonos/configs/z3m_rate30_r2grpo_phoneme_tokens.yaml`, see
 `lingua/apps/zonos/PHONEMES.md`): a group open token, a group close token and one token per IPA symbol of the
-136-symbol inventory of the gold pronunciation lexicon (`lexicons/gold_phonemes_v1`, not published),
-138 text rows. They ship in the release text rows,
+136-symbol inventory of the gold pronunciation lexicon (`lexicons/gold_phonemes_v1`, in no model repo; the Space ships
+it), 138 text rows. They ship in the release text rows,
 `hf://Zyphra/ZONOS3-Mini/lm/zonos3_mini/text_rows/pause_tokens_s5000.pt` (`zonos-text-extra/1`, 143 rows: these 138
 phoneme rows byte for byte, then the start row and four pause rows, [below](#start-and-pause-tokens)). Only those rows
 were trained, on the frozen release LM, so on text without groups or markers the model is the release LM bit for bit:

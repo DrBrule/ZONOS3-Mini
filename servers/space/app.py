@@ -5,10 +5,11 @@ reference (zonos3.reference) with generation on ZeroGPU.
 The routes are the part of servers/api/openapi.yaml the studio and the lite page use when the server has no plugins or project
 store (``/v2/capabilities`` says so and the studio adapts): GET ``/v2/capabilities``, ``/v2/controls``,
 ``/v2/speakers``, ``/v2/speakers/{id}/preview``, ``/v2/speakers/{id}/embedding``, POST ``/v2/speakers``,
-``/v2/generate`` (prefix-streamed float32 PCM, chunks ramping from 1 frame; LACI on the alignment heads of laci_heads/)
-and speech editing (``/v2/edit/transcribe``, ``/v2/edit/align``, ``/v2/edit``: the edit LoRA per request); no
-``/v2/phonemize`` (no pronunciation lexicon: 404, ``phonemize_enabled`` false).
-Weights, the edit LoRA and the release text rows come from the public Zyphra/ZONOS3-Mini.
+``/v2/generate`` (prefix-streamed float32 PCM, chunks ramping from 1 frame; LACI on the alignment heads of laci_heads/),
+``/v2/phonemize`` (the gold lexicon in lexicon/, espeak-ng guesses) and speech editing (``/v2/edit/transcribe``,
+``/v2/edit/align``, ``/v2/edit``: the edit LoRA per request).
+Weights, the edit LoRA and the release text rows come from the public Zyphra/ZONOS3-Mini; the lexicon ships with the
+Space (deploy.py --lexicon).
 Pronunciation groups read the release phoneme tokens, appended at load after the edit vocabulary. Speaker embeddings
 run on this process's CPU; generation, edit regions, Qwen3-ASR and FuseAlign run in a held GPU session
 (``gpu_session`` / ``GpuSessions``), on the visitor's ZeroGPU quota through the X-IP-Token the studio forwards from
@@ -102,6 +103,7 @@ from zonos3.tts.directions import RAW_SPACE
 from zonos3.tts.edit import edit_marker_rows
 from zonos3.tts.edit_runtime import EditModel, EditRuntime, FillJob, fill_steering, steer_fields, steer_release
 from zonos3.tts.laci import discover_laci_heads
+from zonos3.tts.phonemes import PhonemeLexicon
 from zonos3.tts.steering import (
     check_controls,
     controls_document,
@@ -141,6 +143,9 @@ ASSETS = ReferenceAssets.load(
 )
 CONTEXT = ReferenceContext(LM, ASSETS, DEVICE)  # the request rules' view of the checkpoint (no GPU work)
 EDIT_LORA = AccentState.for_model(LM, EDIT_ADAPTER, 1.0)
+# The gold pronunciation lexicon behind "Phonemize selection" (staged by deploy.py: not in the model repo); espeak-ng
+# (espeakng-loader) guesses the words it lacks.
+LEXICON = PhonemeLexicon(str(ROOT / "lexicon"))
 ASSETS.decoder(CONFIG.audio_codec, DEVICE)
 ASSETS.speaker_encoder(CONFIG.speaker_embedding_codec, CONFIG.speaker_embedding_dim, CPU)
 # A clip in reference mode is encoded by the dual codec inside the GPU call; fetch its teacher folder now.
@@ -161,8 +166,8 @@ EDIT_MODEL = EditModel.from_config(
 
 
 def capabilities() -> dict:
-    """GET /v2/capabilities (zonos3.server.capabilities) of this Space: the release LM with its speaker paths and the
-    edit LoRA; no pronunciation lexicon, plugins or project store."""
+    """GET /v2/capabilities (zonos3.server.capabilities) of this Space: the release LM with its speaker paths, the edit
+    LoRA and the gold lexicon; no plugins, no project store."""
     c = CONFIG
     modes = list(CONTEXT.speaker_modes)
     decoder, decoders = decoder_capabilities(c.audio_codec, DECODERS)
@@ -200,9 +205,7 @@ def capabilities() -> dict:
             edit_model=EDIT_MODEL,
             edit_available=True,
             edit_transcribe=True,
-            # No gold pronunciation lexicon (its only copy was in the retired private release repo): phonemize_enabled
-            # false, so the studio hides "Pronounce…"; typed pronunciation groups still work.
-            lexicon=None,
+            lexicon=LEXICON,
             projects={"enabled": False},
             steer_release=release_document(ASSETS.steer_bundle),
         )
@@ -806,8 +809,14 @@ async def get_capabilities():
 
 @app.post("/v2/phonemize")
 async def phonemize(req: PhonemizeRequest):
-    """No pronunciation lexicon on this Space (zonos3_sgl's answer without --tts-phoneme-lexicon)."""
-    raise HTTPException(status_code=404, detail="This server has no pronunciation lexicon.")
+    """Gold-lexicon IPA for the words of a text (espeak-ng guesses for the words it lacks); a pronunciation with a symbol
+    outside the phoneme tokens is "unsupported"."""
+    try:
+        return await asyncio.to_thread(
+            LEXICON.phonemize_for, req.text, req.language, CONTEXT.text_tokenizer_spec, guess=req.guess
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/v2/controls")

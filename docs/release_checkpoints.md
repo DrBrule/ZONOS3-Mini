@@ -8,7 +8,8 @@ the `ownmect_s2` speaker encoder, registries, the speech-edit LoRA `lm/zonos3_mi
 (rebuilt from `gguf/edit/accents.gguf` and `gguf/backbone-ptq-edit.gguf`: its factors pack back to `accents.gguf` bit for
 bit), the release text rows (phoneme, start and pause tokens), and the `gguf/` and `web/` conversions. The pronunciation
 lexicon and `lm/mect_60k` were only in the private **Zyphra/ZONOS3_Mini_release_ckpts** (revision
-`4d1d9efca3fb58ca880e028586d9f98bbc002288`), which no longer resolves. `zonos3.utils.release` resolves
+`4d1d9efca3fb58ca880e028586d9f98bbc002288`), which no longer resolves; the Space ships the lexicon as `lexicon/`
+(`servers/space/deploy.py --lexicon`). `zonos3.utils.release` resolves
 `hf://owner/repo/path` locations (files via `hf_hub_download`, folders via `snapshot_download`, into `HF_HOME`).
 Defaults: `--model-path` = `hf://Zyphra/ZONOS3-Mini/lm/zonos3_mini` (`ZONOS3_RELEASE_REPO` / `ZONOS3_RELEASE_LM`
 override it); the registries in `model/src/zonos3/registries/` (`codec_registry.json` (both decoder heads,
