@@ -4,10 +4,12 @@
 The released weights are the public repo **[Zyphra/ZONOS3-Mini](https://huggingface.co/Zyphra/ZONOS3-Mini)**: the
 language model `lm/zonos3_mini` (the `lm/rate30_20k_r2grpo` LM below), the dual codec `autoencoder/generator.pt` + its
 semantic teacher `autoencoder/teacher`, the two causal MR iSTFT decoder heads `autoencoder/heads/{full_mr,keep2_plain}`,
-the `ownmect_s2` speaker encoder, registries, and the `gguf/` and `web/` conversions. The speech-edit LoRA, the phoneme
-tokens, the pronunciation lexicon and `lm/mect_60k` stay in the private **Zyphra/ZONOS3_Mini_release_ckpts** (revision
-`4d1d9efca3fb58ca880e028586d9f98bbc002288`). `zonos3.utils.release` resolves `hf://owner/repo/path` locations (files via
-`hf_hub_download`, folders via `snapshot_download`, into `HF_HOME`; `HF_TOKEN` or a stored login for the private repo).
+the `ownmect_s2` speaker encoder, registries, the speech-edit LoRA `lm/zonos3_mini/edit_lora/z3m_omni3b_edit_lora.pt`
+(rebuilt from `gguf/edit/accents.gguf` and `gguf/backbone-ptq-edit.gguf`: its factors pack back to `accents.gguf` bit for
+bit), the release text rows (phoneme, start and pause tokens), and the `gguf/` and `web/` conversions. The pronunciation
+lexicon and `lm/mect_60k` were only in the private **Zyphra/ZONOS3_Mini_release_ckpts** (revision
+`4d1d9efca3fb58ca880e028586d9f98bbc002288`), which no longer resolves. `zonos3.utils.release` resolves
+`hf://owner/repo/path` locations (files via `hf_hub_download`, folders via `snapshot_download`, into `HF_HOME`).
 Defaults: `--model-path` = `hf://Zyphra/ZONOS3-Mini/lm/zonos3_mini` (`ZONOS3_RELEASE_REPO` / `ZONOS3_RELEASE_LM`
 override it); the registries in `model/src/zonos3/registries/` (`codec_registry.json` (both decoder heads,
 `keep2_plain` the default), `speaker_encoder_registry.json`) point at the same repo (`ZONOS3_SPEAKER_ENCODER_REGISTRY`

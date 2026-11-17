@@ -2,7 +2,7 @@
 import type { DecoderInfo } from '../api';
 
 const CODEC = 'opus_dual_3n_600k_sched600k_r4096_step600000';
-const HEADS = 'hf://Zyphra/ZONOS3_Mini_release_ckpts/autoencoder/heads';
+const HEADS = 'hf://Zyphra/ZONOS3-Mini/autoencoder/heads';
 
 export const FIXTURE_DECODERS: DecoderInfo[] = [
   {

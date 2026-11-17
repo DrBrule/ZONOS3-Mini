@@ -181,7 +181,7 @@ The studio's steering controls come from `STEER_BUNDLE`.
   (default `.venv-asr/bin/python`) and `ZONOS3_ASR_DEVICE` its device (default `cuda:0`, else CPU). Without it
   `/v2/capabilities` reports `edit_transcribe: false`, and editing needs the clip's transcript.
 - **Speech editing** needs the speech-edit LoRA (sgl: `--accent-adapters <dir with z3m_omni3b_edit_lora.pt>` on the
-  release LM; the LoRA is in the private `Zyphra/ZONOS3_Mini`, `lm/rate30_20k_r2grpo/edit_lora/`; see
+  release LM; the LoRA is in the public `Zyphra/ZONOS3-Mini`, `lm/zonos3_mini/edit_lora/`; see
   [docs/guide.md](docs/guide.md)) or an edit checkpoint (`SERVE_MODEL=<edit checkpoint>`), and FuseAlign for the word
   timings. The ggml and MLX servers get it from `gguf/backbone-ptq-edit.gguf` and `gguf/edit/accents.gguf`.
 - **Forced alignment** (speech editing) is the FuseAlign aligner: the submodule `third_party/fusealign-multilingual`
@@ -198,7 +198,7 @@ The studio's steering controls come from `STEER_BUNDLE`.
   `servers/sgl/scripts/serve.sh` and `python -m zonos3.reference` load with the release LM (other checkpoints:
   `SERVE_TEXT_ROWS` / `--phoneme-rows`; GGUF `convert_gguf.py lm --phoneme-rows`; `gguf/backbone-ptq-edit.gguf` already
   has them), or a checkpoint merged with them (`tools/add_text_extra_rows.py`). "Phonemize selection" needs
-  `PHONEME_LEXICON=<lexicon dir>` (`lexicons/gold_phonemes_v1` of the private `Zyphra/ZONOS3_Mini` repo).
+  `PHONEME_LEXICON=<lexicon dir>` (`lexicons/gold_phonemes_v1`, not published).
   `uv sync --group phonemize` adds espeak-ng guesses for `POST /v2/phonemize` (GPL-3.0, opt-in).
 - **Accent adapters** need `--accent-adapters <dir>`.
 
