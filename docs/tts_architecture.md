@@ -57,6 +57,17 @@ During the prompt phase, audio columns are filled with `audio_pad_id` and the te
 
 The model is trained with an inter-codebook delay: codebook `j` is shifted by `j` frames. `shear()` (`zonos3/tts/prompt.py`) applies this delay to the prompt; `shear_up()` (`zonos3/tts/delay.py`) inverts it before vocoder decoding.
 
+### Extra text rows
+
+`tools/add_text_extra_rows.py` writes `text_extra_tokens` and `text_tokenizer_spec.phonemes` (group markers,
+token ids, symbols), `start` and `pauses` into `params.json`. `text_extra_tokens` is the same field the speech-edit
+vocabulary uses for its marker rows. The phoneme rows, then the start row, then the pause rows are always the last
+extra rows: right after the padding row, or after the edit marker rows (which stay at text_vocab + 1 + j, where edit
+training put them); `superbpe.load_spec` checks that markers plus these rows fill `text_extra_tokens`, and
+`edit_max_spans` counts the marker rows. With the speech-edit vocabulary the result has `text_extra_tokens` 146 (3
+markers, open / close 8200 / 8201, phones from 8202, start 8338, pauses 8339-8342), `speech_editing` with
+`edit_max_spans` 3 and the 136 phone symbols.
+
 ## Request Lifecycle
 
 ```
@@ -175,6 +186,8 @@ The sampler (`sample_tts` in `zonos3/tts/sampler.py`) masks padding and every sp
 utterance never samples span-end and a fill never samples EOA. Utterances draw over codes, EOA and padding only: with
 one random number per column in `torch.multinomial`, an edit checkpoint then produces the same audio for the same
 seed as its weights without the span-end row.
+
+Stop boundaries count host-processed frames, not submitted GPU work.
 
 ## Vocoder (matched dual codec)
 
@@ -354,6 +367,322 @@ codec registry (`zonos3/tokenizer/matched_codec.py`) provides both the encoder f
 unconditional twin. Speech-editing checkpoints add a span-end row per codebook (`span_end_id` 4098) and
 `text_extra_tokens` marker rows after the text vocabulary; `zonos3/tts/edit.py` builds the fill prompts
 ([guide: Speech editing](guide.md#speech-editing)).
+
+## Speech editing pipeline
+
+`TTSLLM.edit(codes, target_text, spans)` generates each masked span
+(`(start_frame, length_frames)`, ascending, at most the checkpoint's edit marker rows: `edit_max_spans`, 3 on the
+release) as its own request over `[speaker row][condition rows][text][unmasked context][earlier
+fills][marker]` and splices the fills into the untouched codec frames.
+
+For `min_fill_ratio` ([guide: Edit request fields](guide.md#edit-request-fields)), the
+sampler masks the stop id per codebook while generated frame s < `min_frames`
++ c (`TTSSamplingParams.min_frames`), so the aligned stop frame is at least
+`min_frames`; requests without it build no mask and sample as before.
+`max_span_seconds` stays the upper bound.
+
+The frontend runs an edit through the process pipeline: it encodes the audio
+with the server's one codec encoder (the same memoized encode as raw-reference
+prompts), the tokenizer builds each fill prompt (`TTSTokenizeMsg.edit_*`), the
+scheduler generates it with `end_token="span"`, the detokenizer returns its rows
+as codes (`TTSCodesReply`), and the tokenizer decodes the spliced frames
+(`TTSDecodeCodesMsg`).
+
+In speech edits ([guide: Groups in speech edits](guide.md#groups-in-speech-edits)), the edit
+tokens' normalization would mangle a group (IPA upper-cased, the markers and tie bars
+become word breaks, so `t͡ʃiːz` reads `T ƩIːZ`), so a group is never normalized: it
+is one target token of its own in the word diff, windows and expected fill length
+(its length = its IPA symbols × 1.4 letter-equivalents,
+`GROUP_LETTERS_PER_SYMBOL`), and window texts keep it as typed, so fill prompts
+carry the group ids as `/v2/generate` encodes them. With `verify`, each group is
+a wildcard word of the WER / CER reference (any one recognized word matches; ties
+go to the alignment with the fewest character edits), the take's word alignment
+uses the target with each group replaced by the word heard, and `verify.groups`
+lists every group of `target_text` in order as `{ipa, heard}`. The 1.4 letters
+per IPA symbol (rather than the lexicon's average of about one) reflects that
+spoken duration follows the word, and respelled names and short words carry more
+letters per phone.
+
+## Accent adapters
+
+A request runs base + α × adapter, the merge the adapter was scored as offline.
+Every loaded adapter owns `rank` columns of one shared space, so an adapted
+layer computes `x W^T + ((x D^T) * M) U` with `M` holding each token's strength
+on its adapter's columns; the router balancing biases (quantile thresholds) get
+each request's scaled shift per token. Per-row slots and strengths are CUDA-graph
+inputs. The extra cost is fixed by the total columns loaded, not by how many
+accents a batch mixes.
+
+The adapter keys are the training code's module names, which the converter keeps, and
+`zonos3.models.accent_format.TARGETS` mirrors the training code's
+default targets. Every target adds its shift to the flat
+`[out, in]` product before the runtime splits it, the product the training code's LoRA
+adapts:
+
+| Adapter target | served op | layout |
+|---|---|---|
+| `attention.wq`, `attention.gater` | `Attention.wq` / `.gater` (`SimpleLinear`) | as stored |
+| `attention.wkv` | `Attention.wkv` (`ChunkedLinear`) | `[2, kv, in]` as `[2·kv, in]`, K\|V split after |
+| `attention.wo` | `Attention.wo` (`SimpleLinearOProj`) or `OriginalGDN.wo` | as stored |
+| `attention.in_proj` | `OriginalGDN.in_proj` | fused `[2056, in]`, qkv\|z\|a\|b split after; also applied to the replayed 64-row chunk tail and the graph's fixed windows, with the request's own accent |
+| `feed_forward.w_in` / `w_out` | `FeedForward.w_in` (`ChunkedLinear`) / `.w_out` | `[2, inter, in]` as `[2·inter, in]`, h\|gate split after |
+| `feed_forward.latent_down` / `latent_up` | `MoEFeedForward.latent_down` / `.latent_up` | as stored, around the experts |
+| `router.router_linear` | `Router.router_linear` | logits feed the softmax and the quantile top-k |
+| `multi_output` | `MultiOutputHead` | shift on the real rows after the `min_rows` padding |
+| `router.balancing_biases` (exact float32 shift) | `Router` balancing bias | per-slot table; legacy ZeroMean `parametrizations.balancing_biases.original` re-centred, `ent_denom` / `normalized_entropy` dropped, as in the converter |
+
+Any other moved tensor is refused at load.
+
+**Expert factors (`zonos-accent-lora/2`).** Adapters trained with
+`lora.expert_rank` also shift every MoE expert weight by its own low-rank
+product. They export `layers.N.feed_forward.experts.w13` / `.w2` entries with
+`up` `[E, out, r]`, `down` `[E, r, in]`, `shape` and `experts: E`, in the
+SonicExperts layout: w13 is `[64, 2·1536, 256]` with gate/up rows interleaved,
+w2 `[64, 256, 1536]`. The experts sit in the 256-wide latent between
+`latent_down` and `latent_up`, top-2, on layers 1-10. The non-expert entries
+and the router bias shifts are as in `/1`. Expert factors are served on the
+exact SonicMoE path only (`ZONOS3_USE_TRAINING_SONIC_EXPERTS=1`, which
+`servers/sgl/scripts/env.sh` sets on Hopper; SonicMoE has no A100 build); elsewhere they are refused, as are expert entries in a
+`/1` file, expert weights other than w13 / w2, mismatched shapes or expert
+counts, and an adapter whose w13 and w2 ranks differ.
+
+For a routed (token, expert e) pair of a request on adapter a at strength α:
+
+- `α · U13[a,e] (D13[a,e] x)` is added to the gate/up pre-activation, before
+  SwiGLU;
+- `α · U2[a,e] (D2[a,e] h)` is added to the pair's expert output, before the
+  weighted top-2 sum (`h`: the adapted activation).
+
+Training formed `W_e + U_e D_e` in the forward, so this is the same function
+with the sum regrouped. The exact path's SonicMoE call fuses gather, GEMM and
+SwiGLU, so the pre-activation never reaches memory. The runtime therefore
+replays `moe_general_routing_inputs` with the same routing metadata, QuACK
+kernels and top-k combine, and hands both grouped GEMMs the shift as their
+addend `C` (`D = A·B + C`, added to the float32 accumulator before the
+epilogue). A pair without expert factors (no accent, or a `/1` adapter) has a
+zero row in `C`, and the kernels with a zero addend return the plain call's
+bits.
+
+The shift itself is a Triton kernel (`zonos3_sgl/kernel/triton/expert_lora.py`).
+Each program takes one pair and one output tile, reads that pair's
+`(adapter, expert)` factors, and computes `α · U (D x)` in float32 in a fixed
+order. A pair's bits therefore do not depend on the rest of the batch, and the
+kernel has static shapes for the CUDA graphs. Adapters are grouped by expert
+rank: each rank keeps one `[adapters·E, in, r]` / `[adapters·E, r, out]` stack
+per weight and costs one launch per weight. Pairs off a rank load nothing.
+The engine probes these kernels at load like the other side paths, with 1-256
+pairs against 1024 on every slot.
+
+Exact mode stays batch-invariant with adapters loaded. A request without an
+accent has an all-zero mask row, so its shift is an exact zero. For accented
+requests the engine probes every adapted op at load with 1-256 rows against a
+1024-row product. Any op whose cuBLAS kernel depends on the row count runs its
+side path as fixed 16-row GEMMs instead (on H100, the LM head).
+
+`servers/sgl/scripts/accent_parity.py` (wrapped by `servers/sgl/tests/test_accent_adapters_gpu.py`)
+checks this offline on seeded requests and writes a `report.json`:
+
+- (a) requests without an accent, batched with accented requests, against the
+  engine without adapters (bit-equal logits and codes);
+- (b) every request of a batch mixing accents and strengths against the same
+  request run alone (bit-equal);
+- (c) an adapter at strength 1 against its merged checkpoint
+  (the training code's merged export, then `tools/convert_lingua_checkpoint.py`),
+  teacher-forced on the adapter's codes. These agree closely but not bit for
+  bit: the served sum and the merged bf16 weights round differently, and the
+  MoE top-k turns some of those ulps into different experts. The base model on
+  the same streams gives the scale of the adapter's whole effect.
+
+Requests cycle over no speaker prompt, the raw reference prefix
+(`--reference-audio`) and the speaker-embedding row (`--speaker-embedding`),
+with unknown condition rows; `--merged-model` is optional. The test wrapper
+reads `ZONOS3_TEST_MODEL`, `ZONOS3_TEST_ACCENT_DIR`, `ZONOS3_TEST_MERGED_MODEL`,
+`ZONOS3_TEST_MERGED_ACCENT`, and optionally `ZONOS3_TEST_MIXED_ACCENTS`,
+`ZONOS3_TEST_REFERENCE_AUDIO`, `ZONOS3_TEST_SPEAKER_EMBEDDING` and
+`ZONOS3_TEST_PARITY_OUT`; run it in the exact-mode environment of `servers/sgl/scripts/env.sh`.
+
+Speaker and condition conditioning are prompt-side. The speaker-embedding row
+(`speaker_projection`, Linear 192 → 1024), the three condition rows
+(`condition_embeddings`) and the raw reference prefix replace input rows
+before the transformer, so the adapters need no path for them. Those tensors
+are not LoRA targets: a factor on `speaker_projection` is refused as outside
+`TARGETS`, and an exact shift of it or of a condition table is refused as
+neither a linear factor nor a router bias (`servers/sgl/tests/test_accent_adapters.py`).
+
+A merged checkpoint (release LM plus an adapter, merged by the training code)
+converted with `tools/convert_lingua_checkpoint.py`
+the way the release LM was converted (its `conversion.json` holds the converter
+arguments) is the release model plus the adapter, which is what parity check (c)
+compares against.
+
+## Steering
+
+Request semantics are in [guide: Steering controls](guide.md#steering-controls).
+
+### Hidden-space steering in the engine
+
+For a hidden-space set (`manifest.json`:
+`"space": "attnres_source"`, `"source_index": k`), on every generated frame the
+request's delta is added to source `k` of the Full AttnRes bank (0 = embedding,
+`2i+1` = attention/GDN output of layer `i`, `2i+2` = FFN/MoE output of layer `i`)
+before later sublayers and the output head route from it. Reference and text rows
+are never steered. The add is captured in the decode CUDA graphs with a static row
+buffer; with no control requested the buffer is zero and the logits are
+bit-identical to a server without a bundle. Sets may steer different sources: the
+engine keeps one row-buffer slot per steered source and the request delta carries
+one hidden-size slot per source. `raw` sets move the speaker embedding instead
+(their deltas summed, the result rescaled to the embedding's norm) and need
+`speaker_mode: embedding`. A set is `raw` or `attnres_source`; any other space is
+refused at load.
+
+### How the shipped direction sets were fitted
+
+Directions are measured, not trained: clips are teacher-forced through the offline
+engine, every bank source is mean-pooled over the clip's own frames, and a direction
+is a contrast of those means (e.g. style − neutral) at one source. The shipped sets
+(`<set>_mect60k_x10/`) are refits of the original mect60k sets with the same specs on
+about ten times as much natural speech (spontaneous corpora included; each set's
+`manifest.json` names its corpora, `report.json` its fit), every direction rescaled to
+the norm of the original fit so doses and the studio's ranges carry over; the notes
+below name the original fits' data. The shipped
+`assets/steering/emotion_directions_mect60k_axes_x10/` (bundle set `mood`) uses the GDN output
+of layer 9 (`source_index` 19, `L9.attn`) and folds the style directions into
+orthogonal conceptual axes: valence, arousal, dominance, loudness, tempo, clarity
+and articulation. `articulation` is the component enunciated and confused share,
+which clarity (their difference) cancels: positive is slow, deliberate delivery,
+negative quicker, looser speech.
+
+`assets/steering/speaker_accents_mect60k_x10/` (raw, bundle set `accents_l1`): the direction is the
+mean over native L1 speakers minus the mean over native
+English speakers of the embedding (clips averaged per recording first; gender and
+age, `assets/steering/speaker_attributes_mect60k_x10/`, projected out). The embedding has no
+text in it, so unlike the hidden native-minus-English direction it does not carry
+a language switch.
+
+`assets/steering/mandarin_mect60k_x10/` (raw, `cmn`) and
+`assets/steering/mandarin_hidden_mect60k_x10/` (L7.attn, `cmn`) are the speaker-embedding direction and the
+hidden native − English direction for Mandarin. Neither
+gives Mandarin, Korean or Japanese alone. Served together the two add up for
+Mandarin, at the price of the voice.
+
+`assets/steering/english_accents_mect60k_x10/` (raw, bundle set `accents_en`) holds british, american, scottish, irish,
+australian, indian and welsh, each relative to American English (american is
+the reverse of british, for British voices). They are fitted from speakers with a
+known accent, each contrast inside one corpus so its recording conditions cancel:
+VCTK (accent column), VoxCeleb1 dev (nationality) and OpenSLR 83 English dialects
+(contrasts against southern English, chained through british), gender and age
+projected out.
+
+`assets/steering/voice_quality_mect60k_x10/` (raw, bundle set `texture`) holds deep,
+shrill, husky, raspy, soft and authoritative: ParaSpeechCaps' human speaker tags
+(VoxCeleb / EARS / Expresso speakers on their original recordings), tagged minus
+untagged speakers inside each corpus and gender, gender and age projected out. The
+tags are noisy and the directions short.
+
+`assets/steering/pitch_mect60k_x10/` (raw axes) holds pitch and pitch_range, fitted on
+LibriTTS-R speakers with their measured F0 (pYIN): the least-squares slope of the
+embedding on the speaker's log F0 (pitch) or F0 spread in semitones (pitch_range)
+inside each gender, times the P10-P90 span (dose 1 = from a low-pitched to a
+high-pitched speaker of the same gender), gender and age projected out.
+
+`assets/steering/channel_mect60k_x10/` (raw axis `clean`) is the within-speaker change of the
+embedding with ParaSpeechCaps' recording-cleanliness tag (very noisy … very clean,
+per clip): every VoxCeleb clip minus its speaker's mean clip, regressed on the tag
+minus the speaker's mean tag (`"group_by": "clip", "center": "speaker"`), so the
+direction is the channel, not who records in it.
+
+`assets/steering/ears_styles_mect60k_x10/` (attnres_source, L9.attn like the `mood` axes)
+holds whisper, loud, tempo (fast − slow), pitch (high − low) and conversational
+(spontaneous − read): EARS's speakers read the same passage and sentences in every
+style and talk freely, so each direction is a within-speaker contrast
+(`"center": "speaker"`) with no text or channel difference.
+
+`assets/steering/expressive_mect60k_x10/` (attnres_source L9.attn, axis `expressive`) is the
+within-speaker change of the bank with a clip's F0 spread: LibriTTS-R readers'
+livelier and flatter clips. Livelier
+readings are also higher and slower in LibriTTS-R, and the direction keeps that.
+
+`assets/steering/disfluency_mect60k_x10/` (attnres_source L9.attn, axis `disfluent`):
+DisfluencySpeech's speaker reads Switchboard turns with their fillers, repetitions
+and restarts; each clip is teacher-forced with the FLUENT transcript, so the bank
+sees hesitations the text does not ask for, and the direction is the regression on
+how many.
+
+`assets/steering/emphasis_nv45_nodur/` (attnres_source L9.attn, bundle set `emphasis_nv_nodur`, direction
+`emphasis`; fitted on the NV + phoneme edit checkpoint) is the mean over 636 Expresso pairs of an emphasized word
+minus the same word in the speaker's plain take, with the log-duration slope projected out.
+
+EARS's speakers also read the same sentences in 22 emotions and neutral.
+Within-speaker emotion − neutral gives angry, sad, happy (amusement), fearful,
+disgusted and surprised (amazement) both in the speaker embedding
+(`assets/steering/speaker_emotions_mect60k/`, raw, gender and age projected out) and at
+L9.attn (`assets/steering/ears_emotions_mect60k/`, attnres_source).
+
+`assets/steering/ears_moods_mect60k_x10/` holds every EARS emotion against neutral in the same
+space and spec style as `ears_emotions_mect60k` (attnres_source L9.attn,
+`"group_by": "clip"`, `"center": "speaker"`; its six directions are identical):
+adoring, confused, content, cute, desirous, disappointed, distressed, embarrassed,
+ecstatic, guilty, interested, pained, proud, realizing, relieved and serene next to
+angry, sad, happy, fearful, disgusted and surprised, plus `scared`, fear against the
+other 21 emotions. The directions share one large "emotional reading vs neutral"
+component, and most of them add that component and arousal without their specific
+target.
+
+`assets/steering/accent_directions_mect60k/` holds Hindi only, at L7.attn
+(`source_index` 15): accented English minus English, from English-labelled clips
+that MMS-LID hears as most Hindi-like against native English clips. The other
+accents did not work as one hidden vector (native speech minus English mostly
+switches language before the accent moves).
+
+### Steer then hold: schedule and measurements
+
+At generated frame f (codec frames, 15 per second; a LACI continuation counts its history, an edit fill its
+own first frame) the weight is 1 before the onset, `hold` from onset + ramp on, `1 − (1 − hold)·(f − onset)/ramp` in
+between (ramp 0 is a step); both CFG branches of a steered twin get the same weight. The `exempt` directions (pace:
+span placement and edit lengths assume it), `control_spans`, raw (speaker-embedding) directions and server-side
+deltas (a LACI take's tempo bucket) stay constant.
+
+The shipped defaults (onset 4 s, ramp 1 s, hold 0.35; `delivery.tempo` and `delivery.whisper` exempt) were measured
+on the release LM with the x10 bundle. On three 25–32 s passages (Thaddeus and Rupert, 4 seeds each) a stacked voice
+design (raw identity / pitch / texture / room controls plus `delivery.conversational` 3, `expressive.expressive` 4,
+`mood.valence` 2, `mood.arousal` 2) held constant climbed in 19 of 24 takes (a 4 s window ≥ 6 semitones above the
+first 8 s; neutral 0/24), +7.2 st and +7.0 dB over the neutral take after the first 5 s. Holds 0.25 / 0.35 / 0.5
+climbed in 0 / 0 / 2 takes (+0.2 / +0.6 / +1.9 st, +4.9 / +5.2 / +5.5 dB), with WER and identity unchanged; the
+default is the largest hold with neutral's climb count. A hidden direction stays constant when none of its
+single-direction tests raises loudness or median F0 and it loses its effect once released (32 short lines, 4 voices):
+the whisper kept only 43% of its voicing drop after the onset without raising level or pitch; `emotions.sad` raises
+median F0 on the x10 sets and the Mandarin accent's hidden part keeps its effect, so both release.
+
+### Span steering by reading position
+
+The tokenizer maps each span's characters through text normalization
+to the text tokens that spell them (SuperBPE offsets, every id of a pronunciation group, UTF-8 bytes on byte
+checkpoints); while the request decodes, the LACI alignment heads of its language (`--laci-heads`; the probe of
+`zonos3_sgl.tts.align_probe`, inside the decode CUDA graphs, no LACI retries unless `laci=true`) give one reading position
+per step, smoothed (median of 3, monotone, at most +1 token per step). A span ramps in (3 frames) once the smoothed
+position reaches its first token − `control_span_lead` (default 1) and out once it reaches the token after it +
+`control_span_lag` (default 0). The readout reaches the host with the step's tokens, so a frame is decided on readouts
+one or two steps old; every decision is recorded per frame, so the speaker-CFG twin steers exactly like its request and
+a LACI rollback replays from its row.
+
+### Extended speaking-rate buckets: derivation
+
+The pace control (`delivery.tempo`, hidden L9.attn) can stand in for the speaking-rate condition row: every bucket of
+the row has a tempo dose that reproduces it (agreeing across English and French at the same WER and identity), the
+dose is continuous and reaches further than the row in both directions, and the rate row is left unknown while
+steering (a set bucket damps the steering).
+
+The bundle's `rate_extension` block was measured on the original `ears_styles_mect60k` tempo direction and on a
+ten-bucket speaking-rate row, whose buckets 0-9 the bullets below refer to.
+
+- **Nominal edges** continue the row's at its mean geometric step (×1.097): bucket 0 becomes [9.22, 10.12) B/s,
+  −1 [8.41, 9.22), … and 9 becomes [21.21, 23.26), 10 [23.26, 25.52), …; a language's lowest / highest bucket stays
+  open-ended.
+- **Doses**: bucket −k / 9+k targets the achieved rate (vs the unsteered render) of the row's own achieved ladder
+  continued k steps; the dose is interpolated on the measured dose curve of the language.
+- **Kept buckets** are those whose achieved rate lands within one step of the target at an unchanged WER, collapse rate
+  and identity, contiguous from the row. The per-language table is in
+  [guide: Extended speaking-rate buckets](guide.md#extended-speaking-rate-buckets-rate_extension).
 
 ## Tensor Parallelism
 
